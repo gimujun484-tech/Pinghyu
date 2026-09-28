@@ -1,503 +1,682 @@
--- Kaiju Alpha // C Hub v3
--- Energy 강제 강화 버전
-
+--!nocheck
+-- pinghyu Hub // Kaiju Alpha
+-- Roblox Luau executor script (client-side). Untested in-game: tune settings in the UI.
+-- Toggle UI: RightShift (rebindable) | Toggle AutoFarm: F6 (rebindable)
+ 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
-local UserInputService = game:GetService("UserInputService")
-local VirtualInputManager = game:GetService("VirtualInputManager")
-local LocalPlayer = Players.LocalPlayer
-local Camera = workspace.CurrentCamera
+local UIS = game:GetService("UserInputService")
+local VIM = game:GetService("VirtualInputManager")
+local HttpService = game:GetService("HttpService")
 local CoreGui = game:GetService("CoreGui")
-
-local S = {
-    WalkSpeed = 55,
-    FlySpeed = 80,
-    Fly = false,
-    Noclip = false,
-    InfEnergy = true,
-    AutoFarm = false,
-    AutoSkill = false,
-    Skills = {["1"]=true, ["2"]=true, ["3"]=true, ["4"]=true, ["5"]=true, ["R"]=true, ["T"]=true},
-    FarmDist = 22,
-    FarmHeight = 5,
-    FarmCD = 1.0,
-    AttackDist = 40,
-}
-
-local Connections = {}
-local UIVisible = true
-local currentTab = "Farm"
-local panels = {}
-local energyObjects = {}  -- 찾은 에너지 오브젝트 캐시
-
-pcall(function() if CoreGui:FindFirstChild("CHub") then CoreGui.CHub:Destroy() end end)
-
-local ScreenGui = Instance.new("ScreenGui")
-ScreenGui.Name = "CHub"
-ScreenGui.ResetOnSpawn = false
-ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-ScreenGui.Parent = CoreGui
-
-local Main = Instance.new("Frame")
-Main.Name = "Main"
-Main.Size = UDim2.new(0, 520, 0, 380)
-Main.Position = UDim2.new(0.5, -260, 0.5, -190)
-Main.BackgroundColor3 = Color3.fromRGB(18, 18, 22)
-Main.BorderSizePixel = 0
-Main.Active = true
-Main.Draggable = true
-Main.Parent = ScreenGui
-Instance.new("UICorner", Main).CornerRadius = UDim.new(0, 10)
-
-local TitleBar = Instance.new("Frame")
-TitleBar.Size = UDim2.new(1, 0, 0, 36)
-TitleBar.BackgroundColor3 = Color3.fromRGB(24, 24, 30)
-TitleBar.BorderSizePixel = 0
-TitleBar.Parent = Main
-Instance.new("UICorner", TitleBar).CornerRadius = UDim.new(0, 10)
-
-local Title = Instance.new("TextLabel")
-Title.Size = UDim2.new(1, -50, 1, 0)
-Title.Position = UDim2.new(0, 14, 0, 0)
-Title.BackgroundTransparency = 1
-Title.Text = "C  //  Kaiju Alpha"
-Title.TextColor3 = Color3.fromRGB(230, 230, 240)
-Title.Font = Enum.Font.GothamBold
-Title.TextSize = 15
-Title.TextXAlignment = Enum.TextXAlignment.Left
-Title.Parent = TitleBar
-
-local Close = Instance.new("TextButton")
-Close.Size = UDim2.new(0, 28, 0, 28)
-Close.Position = UDim2.new(1, -32, 0, 4)
-Close.BackgroundColor3 = Color3.fromRGB(140, 35, 35)
-Close.Text = "X"
-Close.TextColor3 = Color3.new(1,1,1)
-Close.Font = Enum.Font.GothamBold
-Close.TextSize = 13
-Close.Parent = TitleBar
-Instance.new("UICorner", Close).CornerRadius = UDim.new(0, 6)
-Close.MouseButton1Click:Connect(function()
-    ScreenGui:Destroy()
-    for _,c in pairs(Connections) do pcall(function() c:Disconnect() end) end
+local Workspace = game:GetService("Workspace")
+local LP = Players.LocalPlayer
+local Camera = Workspace.CurrentCamera
+ 
+-- unload previous instance if re-executed
+pcall(function()
+    if getgenv and getgenv().PinghyuHubUnload then getgenv().PinghyuHubUnload() end
 end)
-
-local Side = Instance.new("Frame")
-Side.Size = UDim2.new(0, 120, 1, -36)
-Side.Position = UDim2.new(0, 0, 0, 36)
-Side.BackgroundColor3 = Color3.fromRGB(22, 22, 28)
-Side.BorderSizePixel = 0
-Side.Parent = Main
-
-local sideTabs = {"Farm", "Movement", "Settings"}
-local tabButtons = {}
-
-local function SetTab(name)
-    currentTab = name
-    for n, btn in pairs(tabButtons) do
-        btn.BackgroundColor3 = (n == name) and Color3.fromRGB(45, 100, 200) or Color3.fromRGB(30, 30, 38)
+ 
+---------------------------------------------------------------- CONFIG
+local SKILL_ORDER = {"1", "2", "3", "4", "5", "R", "T"}
+local KEYCODES = {
+    ["1"] = Enum.KeyCode.One, ["2"] = Enum.KeyCode.Two, ["3"] = Enum.KeyCode.Three,
+    ["4"] = Enum.KeyCode.Four, ["5"] = Enum.KeyCode.Five, ["R"] = Enum.KeyCode.R, ["T"] = Enum.KeyCode.T,
+}
+ 
+local DEFAULT = {
+    Farm = {
+        Enabled = false,
+        Priority = "Nearest",      -- Nearest / Largest / Random
+        Range = 400,               -- max target search distance
+        SideDist = 22,             -- distance from target edge
+        Height = 5,                -- height offset
+        RepositionThreshold = 6,   -- only re-teleport if farther than this from ideal spot
+        RetargetCD = 0.5,          -- min seconds between target searches
+        TargetTimeout = 20,        -- seconds on one target before blacklist (0 = off)
+        BlacklistTime = 30,        -- seconds a timed-out target is ignored
+    },
+    Target = {
+        MinSize = 18, MaxSize = 260,   -- part Size.Magnitude range
+        MinY = 2.5, MaxY = 65,         -- part height range
+        MaxWorldY = 160,               -- ignore parts above this world Y
+        MinDist = 8,                   -- ignore parts closer than this
+    },
+    Skills = {
+        Enabled = false,           -- spam skills even without a farm target
+        Keys = {["1"]=true, ["2"]=true, ["3"]=true, ["4"]=true, ["5"]=true, ["R"]=true, ["T"]=true},
+        Cooldowns = {["1"]=0.5, ["2"]=0.5, ["3"]=0.5, ["4"]=0.5, ["5"]=0.5, ["R"]=0.5, ["T"]=0.5},
+        CycleInterval = 0.55,
+        HoldTime = 0.03,
+        KeyGap = 0.07,
+        Range = 40,                -- during autofarm, only fire when target is this close
+    },
+    Move = {
+        ApplySpeed = true, WalkSpeed = 55, Jump = 75,
+        Fly = false, FlySpeed = 80, Noclip = false,
+    },
+    Misc = {
+        InfEnergy = true,
+        EnergyKeywords = "energy,stamina,power,mana,gauge,fuel",
+        EnergyValue = 999999,
+        ToggleUI = "RightShift",
+        ToggleFarm = "F6",
+    },
+}
+ 
+local function deepCopy(t)
+    local r = {}
+    for k, v in pairs(t) do r[k] = type(v) == "table" and deepCopy(v) or v end
+    return r
+end
+ 
+local function merge(dst, src)
+    for k, v in pairs(src) do
+        if type(v) == "table" and type(dst[k]) == "table" then merge(dst[k], v)
+        elseif dst[k] ~= nil and type(dst[k]) == type(v) then dst[k] = v end
     end
-    for n, panel in pairs(panels) do
-        panel.Visible = (n == name)
+end
+ 
+local Cfg = deepCopy(DEFAULT)
+local FILE = "PinghyuHub_KaijuAlpha.json"
+local hasFS = type(writefile) == "function" and type(readfile) == "function" and type(isfile) == "function"
+ 
+local function saveCfg()
+    if not hasFS then return false, "executor has no writefile" end
+    local ok, err = pcall(function() writefile(FILE, HttpService:JSONEncode(Cfg)) end)
+    return ok, ok and "saved" or tostring(err)
+end
+ 
+local function loadCfg()
+    if not hasFS then return false, "executor has no readfile" end
+    if not isfile(FILE) then return false, "no saved config" end
+    local ok, data = pcall(function() return HttpService:JSONDecode(readfile(FILE)) end)
+    if not ok then return false, "bad config file" end
+    merge(Cfg, data)
+    return true, "loaded"
+end
+ 
+local function safeStart()
+    Cfg.Farm.Enabled = false
+    Cfg.Move.Fly = false
+    Cfg.Move.Noclip = false
+end
+ 
+loadCfg()
+safeStart()
+ 
+---------------------------------------------------------------- CORE STATE
+local alive = true
+local conns = {}
+local function conn(signal, fn)
+    local c = signal:Connect(fn)
+    conns[#conns + 1] = c
+    return c
+end
+ 
+local function getRoot()
+    local c = LP.Character
+    return c and c:FindFirstChild("HumanoidRootPart")
+end
+ 
+local State = {target = nil, side = Vector3.xAxis, since = 0, lastPick = 0}
+local Cache, Blacklist = {}, {}
+ 
+---------------------------------------------------------------- TARGET CACHE
+local function admit(o)
+    if not o:IsA("BasePart") then return end
+    if not o.Anchored or not o.CanCollide then return end
+    if o.Size.Magnitude < 6 then return end
+    local m = o:FindFirstAncestorOfClass("Model")
+    if m and m:FindFirstChildOfClass("Humanoid") then return end
+    Cache[o] = true
+end
+ 
+task.spawn(function()
+    local n = 0
+    for _, o in ipairs(Workspace:GetDescendants()) do
+        if not alive then return end
+        admit(o)
+        n += 1
+        if n % 400 == 0 then task.wait() end
     end
+end)
+conn(Workspace.DescendantAdded, admit)
+conn(Workspace.DescendantRemoving, function(o) Cache[o] = nil end)
+ 
+local function pickTarget(root)
+    local T, F = Cfg.Target, Cfg.Farm
+    local rp, now = root.Position, os.clock()
+    local rangeSq, minSq = F.Range * F.Range, T.MinDist * T.MinDist
+    local best, bestScore, count = nil, -math.huge, 0
+    for part in pairs(Cache) do
+        if part.Parent then
+            local bl = Blacklist[part]
+            if not bl or bl < now then
+                if bl then Blacklist[part] = nil end
+                local s, p = part.Size, part.Position
+                local mag = s.Magnitude
+                if mag >= T.MinSize and mag <= T.MaxSize and s.Y >= T.MinY and s.Y <= T.MaxY and p.Y <= T.MaxWorldY then
+                    local d = p - rp
+                    local dsq = d:Dot(d)
+                    if dsq <= rangeSq and dsq >= minSq then
+                        if F.Priority == "Random" then
+                            count += 1
+                            if math.random(count) == 1 then best = part end
+                        else
+                            local score = (F.Priority == "Largest") and mag or -dsq
+                            if score > bestScore then bestScore, best = score, part end
+                        end
+                    end
+                end
+            end
+        end
+    end
+    return best
 end
-
-for i, name in ipairs(sideTabs) do
-    local b = Instance.new("TextButton")
-    b.Size = UDim2.new(1, -12, 0, 36)
-    b.Position = UDim2.new(0, 6, 0, 12 + (i-1)*44)
-    b.BackgroundColor3 = (i==1) and Color3.fromRGB(45, 100, 200) or Color3.fromRGB(30, 30, 38)
-    b.Text = name
-    b.TextColor3 = Color3.new(1,1,1)
-    b.Font = Enum.Font.GothamMedium
-    b.TextSize = 14
-    b.Parent = Side
-    Instance.new("UICorner", b).CornerRadius = UDim.new(0, 7)
-    tabButtons[name] = b
-    b.MouseButton1Click:Connect(function() SetTab(name) end)
-end
-
-local Content = Instance.new("Frame")
-Content.Size = UDim2.new(1, -130, 1, -46)
-Content.Position = UDim2.new(0, 125, 0, 42)
-Content.BackgroundTransparency = 1
-Content.Parent = Main
-
-local function MakeSection(parent, title, y)
-    local f = Instance.new("Frame")
-    f.Size = UDim2.new(1, -10, 0, 0)
-    f.Position = UDim2.new(0, 5, 0, y)
-    f.BackgroundColor3 = Color3.fromRGB(26, 26, 32)
-    f.BorderSizePixel = 0
-    f.Parent = parent
-    Instance.new("UICorner", f).CornerRadius = UDim.new(0, 8)
-
-    local t = Instance.new("TextLabel")
-    t.Size = UDim2.new(1, -12, 0, 24)
-    t.Position = UDim2.new(0, 10, 0, 4)
-    t.BackgroundTransparency = 1
-    t.Text = title
-    t.TextColor3 = Color3.fromRGB(180, 180, 200)
-    t.Font = Enum.Font.GothamBold
-    t.TextSize = 13
-    t.TextXAlignment = Enum.TextXAlignment.Left
-    t.Parent = f
-    return f
-end
-
-local function MakeToggle(parent, text, y, default, cb)
-    local btn = Instance.new("TextButton")
-    btn.Size = UDim2.new(1, -20, 0, 26)
-    btn.Position = UDim2.new(0, 10, 0, y)
-    btn.BackgroundColor3 = default and Color3.fromRGB(40, 120, 70) or Color3.fromRGB(40, 40, 50)
-    btn.Text = text .. (default and "   ON" or "   OFF")
-    btn.TextColor3 = Color3.new(1,1,1)
-    btn.Font = Enum.Font.Gotham
-    btn.TextSize = 12
-    btn.Parent = parent
-    Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 6)
-
-    local state = default
-    btn.MouseButton1Click:Connect(function()
-        state = not state
-        btn.BackgroundColor3 = state and Color3.fromRGB(40, 120, 70) or Color3.fromRGB(40, 40, 50)
-        btn.Text = text .. (state and "   ON" or "   OFF")
-        cb(state)
+ 
+---------------------------------------------------------------- AUTOFARM
+conn(RunService.Heartbeat, function()
+    local F = Cfg.Farm
+    if not F.Enabled then State.target = nil return end
+    local root = getRoot()
+    if not root then return end
+    local now = os.clock()
+    local t = State.target
+ 
+    if t then
+        if not t.Parent then
+            t = nil
+        elseif F.TargetTimeout > 0 and now - State.since > F.TargetTimeout then
+            Blacklist[t] = now + F.BlacklistTime
+            t = nil
+        elseif (t.Position - root.Position).Magnitude > F.Range + 20 then
+            t = nil
+        end
+    end
+ 
+    if not t then
+        State.target = nil
+        if now - State.lastPick < F.RetargetCD then return end
+        State.lastPick = now
+        t = pickTarget(root)
+        if not t then return end
+        State.target, State.since = t, now
+        local off = Vector3.new(root.Position.X - t.Position.X, 0, root.Position.Z - t.Position.Z)
+        State.side = off.Magnitude > 0.5 and off.Unit or Vector3.xAxis
+    end
+ 
+    local pos = t.Position
+    local edge = math.max(t.Size.X, t.Size.Z) * 0.5
+    local desired = pos + State.side * (edge + F.SideDist) + Vector3.new(0, F.Height, 0)
+    if (root.Position - desired).Magnitude > F.RepositionThreshold then
+        root.CFrame = CFrame.new(desired, pos)
+        root.AssemblyLinearVelocity = Vector3.zero
+    end
+end)
+ 
+---------------------------------------------------------------- SKILLS
+local lastPress = {}
+local function pressKey(k, hold)
+    pcall(function()
+        VIM:SendKeyEvent(true, KEYCODES[k], false, game)
+        task.wait(hold)
+        VIM:SendKeyEvent(false, KEYCODES[k], false, game)
     end)
 end
-
-local function MakeSlider(parent, text, y, min, max, default, cb)
-    local label = Instance.new("TextLabel")
-    label.Size = UDim2.new(1, -20, 0, 16)
-    label.Position = UDim2.new(0, 10, 0, y)
-    label.BackgroundTransparency = 1
-    label.Text = text .. ": " .. default
-    label.TextColor3 = Color3.fromRGB(190, 190, 210)
-    label.Font = Enum.Font.Gotham
-    label.TextSize = 12
-    label.TextXAlignment = Enum.TextXAlignment.Left
-    label.Parent = parent
-
-    local bar = Instance.new("Frame")
-    bar.Size = UDim2.new(1, -20, 0, 8)
-    bar.Position = UDim2.new(0, 10, 0, y + 18)
-    bar.BackgroundColor3 = Color3.fromRGB(35, 35, 45)
-    bar.Parent = parent
-    Instance.new("UICorner", bar).CornerRadius = UDim.new(0, 4)
-
-    local fill = Instance.new("Frame")
-    fill.Size = UDim2.new(math.clamp((default-min)/(max-min),0,1), 0, 1, 0)
-    fill.BackgroundColor3 = Color3.fromRGB(60, 120, 200)
-    fill.Parent = bar
-    Instance.new("UICorner", fill).CornerRadius = UDim.new(0, 4)
-
+ 
+task.spawn(function()
+    while alive do
+        local S = Cfg.Skills
+        task.wait(math.max(S.CycleInterval, 0.05))
+        local go = S.Enabled
+        if not go and Cfg.Farm.Enabled and State.target then
+            local root = getRoot()
+            if root then go = (State.target.Position - root.Position).Magnitude <= S.Range end
+        end
+        if go then
+            for _, k in ipairs(SKILL_ORDER) do
+                if not alive then break end
+                if S.Keys[k] and os.clock() - (lastPress[k] or 0) >= S.Cooldowns[k] then
+                    lastPress[k] = os.clock()
+                    pressKey(k, S.HoldTime)
+                    task.wait(S.KeyGap)
+                end
+            end
+        end
+    end
+end)
+ 
+---------------------------------------------------------------- ENERGY
+local hooked = {}
+local energyObjs = {}
+ 
+local function parseKeywords()
+    local list = {}
+    for w in string.gmatch(string.lower(Cfg.Misc.EnergyKeywords), "[^,%s]+") do list[#list + 1] = w end
+    return list
+end
+ 
+local function nameMatches(name, kws)
+    name = string.lower(name)
+    for _, w in ipairs(kws) do
+        if string.find(name, w, 1, true) then return true end
+    end
+    return false
+end
+ 
+local function scanEnergy()
+    local kws = parseKeywords()
+    energyObjs = {}
+    if #kws == 0 then return end
+    local function check(o)
+        if (o:IsA("NumberValue") or o:IsA("IntValue")) and nameMatches(o.Name, kws) then
+            energyObjs[#energyObjs + 1] = o
+            if not hooked[o] then
+                hooked[o] = true
+                conn(o:GetPropertyChangedSignal("Value"), function()
+                    if Cfg.Misc.InfEnergy and o.Value < Cfg.Misc.EnergyValue * 0.5 then
+                        o.Value = Cfg.Misc.EnergyValue
+                    end
+                end)
+            end
+        end
+    end
+    for _, o in ipairs(LP:GetDescendants()) do check(o) end
+    local c = LP.Character
+    if c then for _, o in ipairs(c:GetDescendants()) do check(o) end end
+end
+ 
+local function forceEnergy()
+    local v, kws = Cfg.Misc.EnergyValue, parseKeywords()
+    for _, o in ipairs(energyObjs) do
+        if o.Parent then pcall(function() o.Value = v end) end
+    end
+    local function attrs(inst)
+        if not inst then return end
+        for name, val in pairs(inst:GetAttributes()) do
+            if type(val) == "number" and nameMatches(name, kws) then inst:SetAttribute(name, v) end
+        end
+    end
+    attrs(LP.Character)
+    attrs(LP)
+end
+ 
+task.spawn(function()
+    task.wait(2)
+    while alive do
+        if Cfg.Misc.InfEnergy then pcall(scanEnergy) end
+        task.wait(4)
+    end
+end)
+task.spawn(function()
+    while alive do
+        if Cfg.Misc.InfEnergy then pcall(forceEnergy) end
+        task.wait(0.2)
+    end
+end)
+conn(LP.CharacterAdded, function()
+    task.wait(1.5)
+    pcall(scanEnergy)
+end)
+ 
+---------------------------------------------------------------- MOVEMENT
+local flying = false
+conn(RunService.RenderStepped, function(dt)
+    local char = LP.Character
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    local root = char and char:FindFirstChild("HumanoidRootPart")
+    if not hum or not root then return end
+    local M = Cfg.Move
+ 
+    if M.ApplySpeed then
+        if hum.WalkSpeed ~= M.WalkSpeed then hum.WalkSpeed = M.WalkSpeed end
+        pcall(function()
+            hum.UseJumpPower = true
+            if hum.JumpPower ~= M.Jump then hum.JumpPower = M.Jump end
+        end)
+    end
+ 
+    if M.Fly then
+        flying = true
+        hum.PlatformStand = true
+        local cam, dir = Camera.CFrame, Vector3.zero
+        if UIS:IsKeyDown(Enum.KeyCode.W) then dir += cam.LookVector end
+        if UIS:IsKeyDown(Enum.KeyCode.S) then dir -= cam.LookVector end
+        if UIS:IsKeyDown(Enum.KeyCode.A) then dir -= cam.RightVector end
+        if UIS:IsKeyDown(Enum.KeyCode.D) then dir += cam.RightVector end
+        if UIS:IsKeyDown(Enum.KeyCode.Space) then dir += Vector3.yAxis end
+        if UIS:IsKeyDown(Enum.KeyCode.LeftControl) then dir -= Vector3.yAxis end
+        if dir.Magnitude > 0 then
+            root.CFrame = root.CFrame + dir.Unit * M.FlySpeed * dt
+        end
+        root.AssemblyLinearVelocity = Vector3.zero
+    elseif flying then
+        flying = false
+        hum.PlatformStand = false
+    end
+end)
+ 
+conn(RunService.Stepped, function()
+    if not Cfg.Move.Noclip then return end
+    local char = LP.Character
+    if not char then return end
+    for _, p in ipairs(char:GetDescendants()) do
+        if p:IsA("BasePart") then p.CanCollide = false end
+    end
+end)
+ 
+---------------------------------------------------------------- UI HELPERS
+local C = {
+    bg = Color3.fromRGB(18, 18, 22), bar = Color3.fromRGB(24, 24, 30), side = Color3.fromRGB(22, 22, 28),
+    item = Color3.fromRGB(34, 34, 42), on = Color3.fromRGB(40, 120, 70), accent = Color3.fromRGB(45, 100, 200),
+    text = Color3.fromRGB(225, 225, 238), dim = Color3.fromRGB(160, 160, 180), off = Color3.fromRGB(44, 44, 54),
+}
+ 
+local function new(class, props, parent)
+    local o = Instance.new(class)
+    for k, v in pairs(props) do o[k] = v end
+    o.Parent = parent
+    return o
+end
+local function corner(o, r) new("UICorner", {CornerRadius = UDim.new(0, r or 6)}, o) end
+ 
+local guiParent = CoreGui
+pcall(function() if gethui then guiParent = gethui() end end)
+pcall(function() local old = guiParent:FindFirstChild("PinghyuHub") if old then old:Destroy() end end)
+ 
+local Gui = new("ScreenGui", {Name = "PinghyuHub", ResetOnSpawn = false, ZIndexBehavior = Enum.ZIndexBehavior.Sibling}, guiParent)
+local Main = new("Frame", {Size = UDim2.new(0, 560, 0, 420), Position = UDim2.new(0.5, -280, 0.5, -210), BackgroundColor3 = C.bg, BorderSizePixel = 0}, Gui)
+corner(Main, 10)
+local TitleBar = new("Frame", {Size = UDim2.new(1, 0, 0, 36), BackgroundColor3 = C.bar, BorderSizePixel = 0}, Main)
+corner(TitleBar, 10)
+new("TextLabel", {Size = UDim2.new(1, -50, 1, 0), Position = UDim2.new(0, 14, 0, 0), BackgroundTransparency = 1, Text = "pinghyu Hub  //  Kaiju Alpha", TextColor3 = C.text, Font = Enum.Font.GothamBold, TextSize = 15, TextXAlignment = Enum.TextXAlignment.Left}, TitleBar)
+local CloseBtn = new("TextButton", {Size = UDim2.new(0, 28, 0, 28), Position = UDim2.new(1, -32, 0, 4), BackgroundColor3 = Color3.fromRGB(140, 35, 35), Text = "X", TextColor3 = Color3.new(1, 1, 1), Font = Enum.Font.GothamBold, TextSize = 13}, TitleBar)
+corner(CloseBtn)
+ 
+local Side = new("Frame", {Size = UDim2.new(0, 110, 1, -36), Position = UDim2.new(0, 0, 0, 36), BackgroundColor3 = C.side, BorderSizePixel = 0}, Main)
+new("UIListLayout", {Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder}, Side)
+new("UIPadding", {PaddingTop = UDim.new(0, 10), PaddingLeft = UDim.new(0, 6), PaddingRight = UDim.new(0, 6)}, Side)
+local Content = new("Frame", {Size = UDim2.new(1, -120, 1, -46), Position = UDim2.new(0, 116, 0, 42), BackgroundTransparency = 1}, Main)
+ 
+-- window drag
+local dragStart, startPos
+conn(TitleBar.InputBegan, function(i)
+    if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then
+        dragStart, startPos = i.Position, Main.Position
+    end
+end)
+conn(UIS.InputChanged, function(i)
+    if dragStart and (i.UserInputType == Enum.UserInputType.MouseMovement or i.UserInputType == Enum.UserInputType.Touch) then
+        local d = i.Position - dragStart
+        Main.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + d.X, startPos.Y.Scale, startPos.Y.Offset + d.Y)
+    end
+end)
+conn(UIS.InputEnded, function(i)
+    if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then dragStart = nil end
+end)
+ 
+-- tabs / pages
+local pages, tabBtns = {}, {}
+local function showTab(name)
+    for n, p in pairs(pages) do p.Visible = (n == name) end
+    for n, b in pairs(tabBtns) do b.BackgroundColor3 = (n == name) and C.accent or C.item end
+end
+local function addPage(name, order)
+    local b = new("TextButton", {Size = UDim2.new(1, 0, 0, 34), BackgroundColor3 = C.item, Text = name, TextColor3 = Color3.new(1, 1, 1), Font = Enum.Font.GothamMedium, TextSize = 13, LayoutOrder = order}, Side)
+    corner(b, 7)
+    local p = new("ScrollingFrame", {Size = UDim2.new(1, 0, 1, 0), BackgroundTransparency = 1, BorderSizePixel = 0, ScrollBarThickness = 4, AutomaticCanvasSize = Enum.AutomaticSize.Y, CanvasSize = UDim2.new(), Visible = false}, Content)
+    new("UIListLayout", {Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder}, p)
+    new("UIPadding", {PaddingLeft = UDim.new(0, 2), PaddingRight = UDim.new(0, 8), PaddingTop = UDim.new(0, 2), PaddingBottom = UDim.new(0, 8)}, p)
+    tabBtns[name], pages[name] = b, p
+    b.MouseButton1Click:Connect(function() showTab(name) end)
+    return p
+end
+ 
+-- controls (all read/write Cfg via path so refreshAll keeps them in sync)
+local refreshers = {}
+local function refreshAll() for _, f in ipairs(refreshers) do f() end end
+local function ref(path)
+    local t = Cfg
+    for i = 1, #path - 1 do t = t[path[i]] end
+    return t, path[#path]
+end
+ 
+local function header(page, text)
+    new("TextLabel", {Size = UDim2.new(1, 0, 0, 20), BackgroundTransparency = 1, Text = text, TextColor3 = C.dim, Font = Enum.Font.GothamBold, TextSize = 12, TextXAlignment = Enum.TextXAlignment.Left}, page)
+end
+ 
+local function toggle(page, text, path, cb)
+    local btn = new("TextButton", {Size = UDim2.new(1, 0, 0, 28), BackgroundColor3 = C.off, TextColor3 = Color3.new(1, 1, 1), Font = Enum.Font.Gotham, TextSize = 12}, page)
+    corner(btn)
+    local function refresh()
+        local t, k = ref(path)
+        btn.Text = text .. "   " .. (t[k] and "ON" or "OFF")
+        btn.BackgroundColor3 = t[k] and C.on or C.off
+    end
+    btn.MouseButton1Click:Connect(function()
+        local t, k = ref(path)
+        t[k] = not t[k]
+        refresh()
+        if cb then cb(t[k]) end
+    end)
+    refreshers[#refreshers + 1] = refresh
+    refresh()
+end
+ 
+local function slider(page, text, path, min, max, step)
+    local f = new("Frame", {Size = UDim2.new(1, 0, 0, 44), BackgroundTransparency = 1}, page)
+    local lbl = new("TextLabel", {Size = UDim2.new(1, -70, 0, 18), BackgroundTransparency = 1, TextColor3 = C.text, Font = Enum.Font.Gotham, TextSize = 12, TextXAlignment = Enum.TextXAlignment.Left}, f)
+    local box = new("TextBox", {Size = UDim2.new(0, 64, 0, 18), Position = UDim2.new(1, -64, 0, 0), BackgroundColor3 = C.item, TextColor3 = C.text, Font = Enum.Font.Gotham, TextSize = 12, ClearTextOnFocus = false}, f)
+    corner(box, 4)
+    local bar = new("Frame", {Size = UDim2.new(1, 0, 0, 8), Position = UDim2.new(0, 0, 0, 28), BackgroundColor3 = C.item}, f)
+    corner(bar, 4)
+    local fill = new("Frame", {Size = UDim2.new(0, 0, 1, 0), BackgroundColor3 = C.accent}, bar)
+    corner(fill, 4)
+ 
+    local function refresh()
+        local t, k = ref(path)
+        lbl.Text = text
+        box.Text = tostring(t[k])
+        fill.Size = UDim2.new(math.clamp((t[k] - min) / (max - min), 0, 1), 0, 1, 0)
+    end
+    local function setFrom(x)
+        local rel = math.clamp((x - bar.AbsolutePosition.X) / math.max(bar.AbsoluteSize.X, 1), 0, 1)
+        local v = math.floor((min + (max - min) * rel) / step + 0.5) * step
+        v = tonumber(string.format("%.3f", v))
+        local t, k = ref(path)
+        t[k] = v
+        refresh()
+    end
     local dragging = false
     bar.InputBegan:Connect(function(i)
         if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then
             dragging = true
-            Main.Draggable = false
+            setFrom(i.Position.X)
         end
     end)
-    UserInputService.InputEnded:Connect(function(i)
-        if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then
-            if dragging then dragging = false Main.Draggable = true end
-        end
+    conn(UIS.InputEnded, function(i)
+        if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then dragging = false end
     end)
-    UserInputService.InputChanged:Connect(function(i)
+    conn(UIS.InputChanged, function(i)
         if dragging and (i.UserInputType == Enum.UserInputType.MouseMovement or i.UserInputType == Enum.UserInputType.Touch) then
-            local rel = math.clamp((i.Position.X - bar.AbsolutePosition.X) / bar.AbsoluteSize.X, 0, 1)
-            local val = math.floor(min + (max-min)*rel + 0.5)
-            fill.Size = UDim2.new(rel, 0, 1, 0)
-            label.Text = text .. ": " .. val
-            cb(val)
+            setFrom(i.Position.X)
         end
     end)
-end
-
--- FARM
-local FarmPanel = Instance.new("ScrollingFrame")
-FarmPanel.Size = UDim2.new(1, 0, 1, 0)
-FarmPanel.BackgroundTransparency = 1
-FarmPanel.ScrollBarThickness = 4
-FarmPanel.CanvasSize = UDim2.new(0, 0, 0, 400)
-FarmPanel.Parent = Content
-panels["Farm"] = FarmPanel
-
-local farmSec = MakeSection(FarmPanel, "Auto Farm", 8)
-farmSec.Size = UDim2.new(1, -10, 0, 160)
-
-MakeToggle(farmSec, "Auto Farm Buildings", 32, false, function(v) S.AutoFarm = v end)
-MakeToggle(farmSec, "Auto Skill Spam", 64, false, function(v) S.AutoSkill = v end)
-MakeToggle(farmSec, "Infinite Energy", 96, true, function(v) S.InfEnergy = v end)
-MakeSlider(farmSec, "Attack Distance", 128, 15, 70, 40, function(v) S.AttackDist = v end)
-
-local skillSec = MakeSection(FarmPanel, "Skill Select", 180)
-skillSec.Size = UDim2.new(1, -10, 0, 150)
-
-local skillOrder = {"1","2","3","4","5","R","T"}
-for i, k in ipairs(skillOrder) do
-    local b = Instance.new("TextButton")
-    b.Size = UDim2.new(0, 42, 0, 28)
-    b.Position = UDim2.new(0, 12 + ((i-1)%4)*48, 0, 34 + math.floor((i-1)/4)*36)
-    b.BackgroundColor3 = S.Skills[k] and Color3.fromRGB(40, 120, 70) or Color3.fromRGB(45, 45, 55)
-    b.Text = k
-    b.TextColor3 = Color3.new(1,1,1)
-    b.Font = Enum.Font.GothamBold
-    b.TextSize = 13
-    b.Parent = skillSec
-    Instance.new("UICorner", b).CornerRadius = UDim.new(0, 6)
-    b.MouseButton1Click:Connect(function()
-        S.Skills[k] = not S.Skills[k]
-        b.BackgroundColor3 = S.Skills[k] and Color3.fromRGB(40, 120, 70) or Color3.fromRGB(45, 45, 55)
+    -- type an exact value (can go past the slider max, only clamped to min)
+    box.FocusLost:Connect(function()
+        local n = tonumber(box.Text)
+        if n then
+            local t, k = ref(path)
+            t[k] = math.max(n, min)
+        end
+        refresh()
     end)
+    refreshers[#refreshers + 1] = refresh
+    refresh()
 end
-
--- MOVEMENT
-local MovePanel = Instance.new("Frame")
-MovePanel.Size = UDim2.new(1, 0, 1, 0)
-MovePanel.BackgroundTransparency = 1
-MovePanel.Visible = false
-MovePanel.Parent = Content
-panels["Movement"] = MovePanel
-
-local moveSec = MakeSection(MovePanel, "Movement", 8)
-moveSec.Size = UDim2.new(1, -10, 0, 200)
-
-MakeToggle(moveSec, "Fly", 32, false, function(v) S.Fly = v end)
-MakeToggle(moveSec, "Noclip", 64, false, function(v) S.Noclip = v end)
-MakeSlider(moveSec, "WalkSpeed", 100, 16, 180, 55, function(v) S.WalkSpeed = v end)
-MakeSlider(moveSec, "Fly Speed", 145, 20, 180, 80, function(v) S.FlySpeed = v end)
-
--- SETTINGS
-local SetPanel = Instance.new("Frame")
-SetPanel.Size = UDim2.new(1, 0, 1, 0)
-SetPanel.BackgroundTransparency = 1
-SetPanel.Visible = false
-SetPanel.Parent = Content
-panels["Settings"] = SetPanel
-
-local setSec = MakeSection(SetPanel, "Farm Tuning", 8)
-setSec.Size = UDim2.new(1, -10, 0, 150)
-
-MakeSlider(setSec, "Side Distance", 32, 8, 45, 22, function(v) S.FarmDist = v end)
-MakeSlider(setSec, "Height Offset", 75, 0, 15, 5, function(v) S.FarmHeight = v end)
-MakeSlider(setSec, "Farm Cooldown (x10)", 118, 5, 25, 10, function(v) S.FarmCD = v/10 end)
-
-UserInputService.InputBegan:Connect(function(input, gpe)
-    if gpe then return end
-    if input.KeyCode == Enum.KeyCode.RightShift then
-        UIVisible = not UIVisible
-        Main.Visible = UIVisible
-    end
+ 
+local function textbox(page, text, path, cb)
+    local f = new("Frame", {Size = UDim2.new(1, 0, 0, 44), BackgroundTransparency = 1}, page)
+    new("TextLabel", {Size = UDim2.new(1, 0, 0, 16), BackgroundTransparency = 1, Text = text, TextColor3 = C.text, Font = Enum.Font.Gotham, TextSize = 12, TextXAlignment = Enum.TextXAlignment.Left}, f)
+    local box = new("TextBox", {Size = UDim2.new(1, 0, 0, 24), Position = UDim2.new(0, 0, 0, 18), BackgroundColor3 = C.item, TextColor3 = C.text, Font = Enum.Font.Gotham, TextSize = 12, ClearTextOnFocus = false, TextXAlignment = Enum.TextXAlignment.Left}, f)
+    corner(box, 4)
+    new("UIPadding", {PaddingLeft = UDim.new(0, 6)}, box)
+    local function refresh() local t, k = ref(path) box.Text = tostring(t[k]) end
+    box.FocusLost:Connect(function()
+        local t, k = ref(path)
+        t[k] = box.Text
+        if cb then cb() end
+    end)
+    refreshers[#refreshers + 1] = refresh
+    refresh()
+end
+ 
+local function cycle(page, text, path, options)
+    local btn = new("TextButton", {Size = UDim2.new(1, 0, 0, 28), BackgroundColor3 = C.item, TextColor3 = Color3.new(1, 1, 1), Font = Enum.Font.Gotham, TextSize = 12}, page)
+    corner(btn)
+    local function refresh() local t, k = ref(path) btn.Text = text .. ":  " .. tostring(t[k]) .. "  (click)" end
+    btn.MouseButton1Click:Connect(function()
+        local t, k = ref(path)
+        local idx = table.find(options, t[k]) or 0
+        t[k] = options[(idx % #options) + 1]
+        refresh()
+    end)
+    refreshers[#refreshers + 1] = refresh
+    refresh()
+end
+ 
+local capture = nil
+local function keybind(page, text, path)
+    local btn = new("TextButton", {Size = UDim2.new(1, 0, 0, 28), BackgroundColor3 = C.item, TextColor3 = Color3.new(1, 1, 1), Font = Enum.Font.Gotham, TextSize = 12}, page)
+    corner(btn)
+    local function refresh() local t, k = ref(path) btn.Text = text .. ":  " .. tostring(t[k]) end
+    btn.MouseButton1Click:Connect(function()
+        btn.Text = text .. ":  press a key..."
+        capture = function(kc)
+            local t, k = ref(path)
+            t[k] = kc.Name
+            refresh()
+        end
+    end)
+    refreshers[#refreshers + 1] = refresh
+    refresh()
+end
+ 
+local statusLbl
+local function setStatus(msg) if statusLbl then statusLbl.Text = msg end end
+local function button(page, text, fn, color)
+    local b = new("TextButton", {Size = UDim2.new(1, 0, 0, 28), BackgroundColor3 = color or C.item, Text = text, TextColor3 = Color3.new(1, 1, 1), Font = Enum.Font.GothamMedium, TextSize = 12}, page)
+    corner(b)
+    b.MouseButton1Click:Connect(fn)
+end
+ 
+---------------------------------------------------------------- UI PAGES
+local pFarm = addPage("Farm", 1)
+header(pFarm, "AUTO FARM")
+toggle(pFarm, "Auto Farm", {"Farm", "Enabled"}, function() State.target = nil end)
+cycle(pFarm, "Target Priority", {"Farm", "Priority"}, {"Nearest", "Largest", "Random"})
+slider(pFarm, "Search Range", {"Farm", "Range"}, 50, 2000, 10)
+slider(pFarm, "Side Distance", {"Farm", "SideDist"}, 0, 120, 1)
+slider(pFarm, "Height Offset", {"Farm", "Height"}, -20, 60, 1)
+slider(pFarm, "Reposition Threshold", {"Farm", "RepositionThreshold"}, 0, 60, 1)
+slider(pFarm, "Retarget Cooldown (s)", {"Farm", "RetargetCD"}, 0.05, 5, 0.05)
+slider(pFarm, "Target Timeout (s, 0 = off)", {"Farm", "TargetTimeout"}, 0, 120, 1)
+slider(pFarm, "Blacklist Time (s)", {"Farm", "BlacklistTime"}, 1, 300, 1)
+ 
+local pTarget = addPage("Targeting", 2)
+header(pTarget, "WHAT COUNTS AS A BUILDING")
+slider(pTarget, "Min Size (magnitude)", {"Target", "MinSize"}, 0, 500, 1)
+slider(pTarget, "Max Size (magnitude)", {"Target", "MaxSize"}, 10, 2000, 5)
+slider(pTarget, "Min Height", {"Target", "MinY"}, 0, 100, 0.5)
+slider(pTarget, "Max Height", {"Target", "MaxY"}, 1, 500, 1)
+slider(pTarget, "Max World Y", {"Target", "MaxWorldY"}, 0, 2000, 5)
+slider(pTarget, "Min Distance", {"Target", "MinDist"}, 0, 200, 1)
+button(pTarget, "Clear Blacklist", function() Blacklist = {} setStatus("blacklist cleared") end)
+ 
+local pSkills = addPage("Skills", 3)
+header(pSkills, "AUTO SKILL")
+toggle(pSkills, "Skill Spam (always)", {"Skills", "Enabled"})
+slider(pSkills, "Cycle Interval (s)", {"Skills", "CycleInterval"}, 0.05, 3, 0.05)
+slider(pSkills, "Key Hold Time (s)", {"Skills", "HoldTime"}, 0.01, 0.5, 0.01)
+slider(pSkills, "Gap Between Keys (s)", {"Skills", "KeyGap"}, 0.01, 1, 0.01)
+slider(pSkills, "Farm Skill Range", {"Skills", "Range"}, 5, 300, 1)
+header(pSkills, "PER-SKILL")
+for _, k in ipairs(SKILL_ORDER) do
+    toggle(pSkills, "Skill " .. k, {"Skills", "Keys", k})
+    slider(pSkills, "Skill " .. k .. " cooldown (s)", {"Skills", "Cooldowns", k}, 0, 30, 0.1)
+end
+ 
+local pMove = addPage("Movement", 4)
+header(pMove, "MOVEMENT")
+toggle(pMove, "Apply Speed / Jump", {"Move", "ApplySpeed"})
+slider(pMove, "WalkSpeed", {"Move", "WalkSpeed"}, 16, 300, 1)
+slider(pMove, "JumpPower", {"Move", "Jump"}, 30, 300, 1)
+toggle(pMove, "Fly (WASD, Space up, Ctrl down)", {"Move", "Fly"})
+slider(pMove, "Fly Speed", {"Move", "FlySpeed"}, 10, 300, 1)
+toggle(pMove, "Noclip", {"Move", "Noclip"})
+ 
+local pMisc = addPage("Misc", 5)
+header(pMisc, "ENERGY")
+toggle(pMisc, "Infinite Energy (client values)", {"Misc", "InfEnergy"})
+textbox(pMisc, "Energy keywords (comma separated)", {"Misc", "EnergyKeywords"}, function() task.spawn(scanEnergy) end)
+slider(pMisc, "Energy Value", {"Misc", "EnergyValue"}, 100, 999999, 100)
+header(pMisc, "KEYBINDS")
+keybind(pMisc, "Toggle UI", {"Misc", "ToggleUI"})
+keybind(pMisc, "Toggle AutoFarm", {"Misc", "ToggleFarm"})
+header(pMisc, "CONFIG")
+ 
+local function unload()
+    if not alive then return end
+    alive = false
+    for _, c in ipairs(conns) do pcall(function() c:Disconnect() end) end
+    pcall(function()
+        local h = LP.Character and LP.Character:FindFirstChildOfClass("Humanoid")
+        if h then h.PlatformStand = false end
+    end)
+    pcall(function() Gui:Destroy() end)
+    pcall(function() if getgenv then getgenv().PinghyuHubUnload = nil end end)
+end
+ 
+button(pMisc, hasFS and "Save Config" or "Save Config (executor unsupported)", function()
+    local _, msg = saveCfg()
+    setStatus(msg)
 end)
-
--- ========== ENERGY 강화 ==========
-
-local function ScanEnergy()
-    energyObjects = {}
-    local function check(obj)
-        if obj:IsA("NumberValue") or obj:IsA("IntValue") or obj:IsA("NumberAttribute") then
-            local n = tostring(obj.Name):lower()
-            if n:find("energy") or n:find("stamina") or n:find("power") or n:find("mana") or 
-               n:find("gauge") or n:find("fuel") or n:find("bar") or n:find("cost") or n:find("sp") then
-                table.insert(energyObjects, obj)
-            end
-        end
-    end
-    local char = LocalPlayer.Character
-    if char then
-        for _,v in pairs(char:GetDescendants()) do check(v) end
-    end
-    for _,v in pairs(LocalPlayer:GetDescendants()) do check(v) end
-    -- PlayerGui도 훑기
-    local pg = LocalPlayer:FindFirstChild("PlayerGui")
-    if pg then
-        for _,v in pairs(pg:GetDescendants()) do check(v) end
-    end
-end
-
-local function ForceEnergy()
-    if not S.InfEnergy then return end
-    for _, obj in ipairs(energyObjects) do
-        pcall(function()
-            if obj:IsA("NumberValue") or obj:IsA("IntValue") then
-                obj.Value = 999999
-            end
-        end)
-    end
-    local char = LocalPlayer.Character
-    if char then
-        pcall(function()
-            char:SetAttribute("Energy", 999999)
-            char:SetAttribute("Stamina", 999999)
-            char:SetAttribute("Power", 999999)
-            char:SetAttribute("SP", 999999)
-        end)
-    end
-end
-
--- 값 변경 감지해서 다시 강제
-local function HookEnergy()
-    for _, obj in ipairs(energyObjects) do
-        if obj:IsA("NumberValue") or obj:IsA("IntValue") then
-            pcall(function()
-                obj:GetPropertyChangedSignal("Value"):Connect(function()
-                    if S.InfEnergy and obj.Value < 500000 then
-                        obj.Value = 999999
-                    end
-                end)
-            end)
-        end
-    end
-end
-
--- 초기 스캔
-task.spawn(function()
-    task.wait(2)
-    ScanEnergy()
-    HookEnergy()
-    print("[C] Energy objects found:", #energyObjects)
+button(pMisc, "Load Config", function()
+    local ok, msg = loadCfg()
+    if ok then safeStart() refreshAll() end
+    setStatus(msg)
 end)
-
-LocalPlayer.CharacterAdded:Connect(function()
-    task.wait(1.5)
-    ScanEnergy()
-    HookEnergy()
+button(pMisc, "Reset To Defaults", function()
+    Cfg = deepCopy(DEFAULT)
+    refreshAll()
+    setStatus("reset to defaults")
 end)
-
--- ========== 나머지 로직 ==========
-
-local function ForceStats()
-    local char = LocalPlayer.Character
-    if not char then return end
-    local hum = char:FindFirstChildOfClass("Humanoid")
-    if not hum then return end
-    hum.WalkSpeed = S.WalkSpeed
-    hum.JumpPower = 75
-    ForceEnergy()
-end
-
-table.insert(Connections, RunService.RenderStepped:Connect(function(dt)
-    ForceStats()
-
-    local char = LocalPlayer.Character
-    if not char then return end
-    local root = char:FindFirstChild("HumanoidRootPart")
-    local hum = char:FindFirstChildOfClass("Humanoid")
-    if not root or not hum then return end
-
-    if S.Fly then
-        hum.PlatformStand = true
-        local cam = Camera.CFrame
-        local dir = Vector3.zero
-        if UserInputService:IsKeyDown(Enum.KeyCode.W) then dir += cam.LookVector end
-        if UserInputService:IsKeyDown(Enum.KeyCode.S) then dir -= cam.LookVector end
-        if UserInputService:IsKeyDown(Enum.KeyCode.A) then dir -= cam.RightVector end
-        if UserInputService:IsKeyDown(Enum.KeyCode.D) then dir += cam.RightVector end
-        if UserInputService:IsKeyDown(Enum.KeyCode.Space) then dir += Vector3.yAxis end
-        if UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) then dir -= Vector3.yAxis end
-        if dir.Magnitude > 0 then
-            root.CFrame = root.CFrame + dir.Unit * S.FlySpeed * dt
-            root.AssemblyLinearVelocity = Vector3.zero
-        end
-    else
-        hum.PlatformStand = false
-    end
-end))
-
-table.insert(Connections, RunService.Stepped:Connect(function()
-    if not S.Noclip then return end
-    local char = LocalPlayer.Character
-    if not char then return end
-    for _, p in pairs(char:GetDescendants()) do
-        if p:IsA("BasePart") then p.CanCollide = false end
-    end
-end))
-
-local keyMap = {
-    ["1"] = Enum.KeyCode.One, ["2"] = Enum.KeyCode.Two, ["3"] = Enum.KeyCode.Three,
-    ["4"] = Enum.KeyCode.Four, ["5"] = Enum.KeyCode.Five, ["R"] = Enum.KeyCode.R, ["T"] = Enum.KeyCode.T
-}
-local skillOrder = {"1","2","3","4","5","R","T"}
-
-local function FireSelected()
-    for _, k in ipairs(skillOrder) do
-        if S.Skills[k] then
-            pcall(function()
-                VirtualInputManager:SendKeyEvent(true, keyMap[k], false, game)
-                task.wait(0.03)
-                VirtualInputManager:SendKeyEvent(false, keyMap[k], false, game)
-            end)
-            task.wait(0.07)
-        end
-    end
-end
-
-local function GetBuildings()
-    local list = {}
-    for _, obj in pairs(workspace:GetDescendants()) do
-        if obj:IsA("BasePart") and obj.Anchored and obj.CanCollide then
-            local s = obj.Size
-            if s.Magnitude > 18 and s.Magnitude < 260 and s.Y > 2.5 and s.Y < 65 and obj.Position.Y < 160 then
-                table.insert(list, obj)
-            end
-        end
-    end
-    return list
-end
-
-local lastFarm = 0
-local currentTarget = nil
-local lastSkillTime = 0
-
-table.insert(Connections, RunService.Heartbeat:Connect(function()
-    if not S.AutoFarm then
-        currentTarget = nil
+button(pMisc, "Unload Hub", unload, Color3.fromRGB(140, 35, 35))
+statusLbl = new("TextLabel", {Size = UDim2.new(1, 0, 0, 18), BackgroundTransparency = 1, Text = "", TextColor3 = C.dim, Font = Enum.Font.Gotham, TextSize = 11, TextXAlignment = Enum.TextXAlignment.Left}, pMisc)
+ 
+CloseBtn.MouseButton1Click:Connect(unload)
+showTab("Farm")
+ 
+---------------------------------------------------------------- INPUT
+conn(UIS.InputBegan, function(i, gpe)
+    if capture and i.UserInputType == Enum.UserInputType.Keyboard then
+        local fn = capture
+        capture = nil
+        fn(i.KeyCode)
         return
     end
-
-    local char = LocalPlayer.Character
-    if not char then return end
-    local root = char:FindFirstChild("HumanoidRootPart")
-    if not root then return end
-
-    if not currentTarget or not currentTarget.Parent or (root.Position - currentTarget.Position).Magnitude > S.AttackDist + 20 then
-        if tick() - lastFarm < S.FarmCD then return end
-        lastFarm = tick()
-        local list = GetBuildings()
-        local best, bestD = nil, 9999
-        for _, b in ipairs(list) do
-            local d = (root.Position - b.Position).Magnitude
-            if d < bestD and d > 8 then
-                bestD = d
-                best = b
-            end
-        end
-        currentTarget = best
-    end
-
-    if currentTarget then
-        local pos = currentTarget.Position
-        local side = Vector3.new(root.Position.X - pos.X, 0, root.Position.Z - pos.Z)
-        if side.Magnitude < 0.5 then side = Vector3.new(1, 0, 0) end
-        side = side.Unit
-        local targetPos = pos + side * (currentTarget.Size.X * 0.5 + S.FarmDist) + Vector3.new(0, S.FarmHeight, 0)
-        root.CFrame = CFrame.new(targetPos, pos)
-
-        if tick() - lastSkillTime > 0.5 then
-            lastSkillTime = tick()
-            FireSelected()
-        end
-    end
-end))
-
-task.spawn(function()
-    while true do
-        task.wait(0.55)
-        if S.AutoSkill then
-            FireSelected()
-        end
+    if gpe then return end
+    local name = i.KeyCode.Name
+    if name == Cfg.Misc.ToggleUI then
+        Main.Visible = not Main.Visible
+    elseif name == Cfg.Misc.ToggleFarm then
+        Cfg.Farm.Enabled = not Cfg.Farm.Enabled
+        State.target = nil
+        refreshAll()
     end
 end)
-
-print("[C] Hub v3 | Energy scan + hook | RightShift toggle")
+ 
+pcall(function() if getgenv then getgenv().PinghyuHubUnload = unload end end)
+print("[pinghyu] Hub loaded | " .. Cfg.Misc.ToggleUI .. " = UI, " .. Cfg.Misc.ToggleFarm .. " = autofarm")
