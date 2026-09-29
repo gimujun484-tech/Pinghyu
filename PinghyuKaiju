@@ -43,6 +43,17 @@ local DEFAULT = {
         MaxWorldY = 160,               -- ignore parts above this world Y
         MinDist = 8,                   -- ignore parts closer than this
     },
+    Hunt = {
+        Enabled = false,
+        Priority = "Nearest",      -- Nearest / LowestHealth
+        Range = 300,               -- max search distance for players
+        EngageDist = 12,           -- how close to get before stopping/attacking (ground mode)
+        RetargetCD = 0.4,
+        SwitchIfCloser = 15,       -- switch target if a new one is this much closer than current
+        HoverAbove = true,         -- hold position above the target's head instead of ground engage
+        HoverHeight = 8,           -- how far above their head to hover
+        HoverSnap = 3,             -- reposition once you drift this far from the hover spot
+    },
     Skills = {
         Enabled = false,           -- spam skills even without a farm target
         Keys = {["1"]=true, ["2"]=true, ["3"]=true, ["4"]=true, ["5"]=true, ["R"]=true, ["T"]=true},
@@ -60,6 +71,15 @@ local DEFAULT = {
         InfEnergy = true,
         EnergyKeywords = "energy,stamina,power,mana,gauge,fuel",
         EnergyValue = 999999,
+        InfCell = false,
+        CellKeywords = "cell,cells,coin,coins,gold,currency,cash",
+        CellValue = 999999999,
+        GodMode = false,
+        GodModeMinHealth = 1,      -- if health ever drops below this before we catch it, treat as emergency (see below)
+        GodModeUntouchable = true, -- also make your parts untouchable/unqueryable so enemy hit detection misses you
+        AutoPlay = false,
+        AutoPlayRespawnDelay = 1.5,
+        AutoPlayClickButtons = true, -- also try clicking any "Respawn/Revive/Continue" GUI button
         ToggleUI = "RightShift",
         ToggleFarm = "F6",
     },
@@ -99,8 +119,11 @@ end
  
 local function safeStart()
     Cfg.Farm.Enabled = false
+    Cfg.Hunt.Enabled = false
     Cfg.Move.Fly = false
     Cfg.Move.Noclip = false
+    Cfg.Misc.GodMode = false
+    Cfg.Misc.AutoPlay = false
 end
  
 loadCfg()
@@ -216,6 +239,108 @@ conn(RunService.Heartbeat, function()
     end
 end)
  
+---------------------------------------------------------------- HUNT (PvP auto-kill)
+-- Finds other players, walks up to engage range, and lets the skill loop below fire on them.
+local HuntState = {target = nil, lastPick = 0}
+ 
+local function getPlayerHealth(plr)
+    local c = plr.Character
+    local hum = c and c:FindFirstChildOfClass("Humanoid")
+    if not hum then return nil end
+    return hum.Health, hum
+end
+ 
+local function pickHuntTarget(root)
+    local H = Cfg.Hunt
+    local rp = root.Position
+    local best, bestScore = nil, math.huge
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr ~= LP then
+            local c = plr.Character
+            local hp, hum = getPlayerHealth(plr)
+            local hroot = c and c:FindFirstChild("HumanoidRootPart")
+            if c and hum and hroot and hp and hp > 0 then
+                local d = (hroot.Position - rp).Magnitude
+                if d <= H.Range then
+                    local score
+                    if H.Priority == "LowestHealth" then score = hp
+                    else score = d end
+                    if score < bestScore then bestScore, best = score, plr end
+                end
+            end
+        end
+    end
+    return best
+end
+ 
+conn(RunService.Heartbeat, function()
+    local H = Cfg.Hunt
+    if not H.Enabled then HuntState.target = nil return end
+    local root = getRoot()
+    if not root then return end
+    local now = os.clock()
+ 
+    local plr = HuntState.target
+    if plr then
+        local c = plr.Character
+        local hp = getPlayerHealth(plr)
+        local hroot = c and c:FindFirstChild("HumanoidRootPart")
+        if not c or not hroot or not hp or hp <= 0 then
+            plr = nil
+        elseif (hroot.Position - root.Position).Magnitude > H.Range + 30 then
+            plr = nil
+        end
+    end
+ 
+    if now - HuntState.lastPick >= H.RetargetCD then
+        HuntState.lastPick = now
+        local candidate = pickHuntTarget(root)
+        if candidate and candidate ~= plr then
+            if not plr then
+                plr = candidate
+            else
+                -- only steal the current target if the new one is meaningfully closer
+                local oldRoot = plr.Character and plr.Character:FindFirstChild("HumanoidRootPart")
+                local newRoot = candidate.Character and candidate.Character:FindFirstChild("HumanoidRootPart")
+                if oldRoot and newRoot then
+                    local oldD = (oldRoot.Position - root.Position).Magnitude
+                    local newD = (newRoot.Position - root.Position).Magnitude
+                    if oldD - newD >= H.SwitchIfCloser then plr = candidate end
+                end
+            end
+        end
+    end
+ 
+    HuntState.target = plr
+    if not plr then return end
+ 
+    local hroot = plr.Character:FindFirstChild("HumanoidRootPart")
+    if not hroot then return end
+    local headPos = hroot.Position + Vector3.new(0, 2.5, 0) -- rough head offset above root
+ 
+    if Cfg.Hunt.HoverAbove then
+        local desired = headPos + Vector3.new(0, Cfg.Hunt.HoverHeight, 0)
+        if (root.Position - desired).Magnitude > Cfg.Hunt.HoverSnap then
+            root.CFrame = CFrame.new(desired, headPos)
+            root.AssemblyLinearVelocity = Vector3.zero
+        else
+            -- close enough to the hover spot: just keep facing down at them, don't fight gravity every frame
+            root.CFrame = CFrame.new(root.Position, headPos)
+            root.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+        end
+    else
+        local d = (hroot.Position - root.Position).Magnitude
+        if d > Cfg.Hunt.EngageDist then
+            local dir = (hroot.Position - root.Position)
+            dir = Vector3.new(dir.X, 0, dir.Z)
+            if dir.Magnitude > 0.1 then
+                local desired = hroot.Position - dir.Unit * Cfg.Hunt.EngageDist
+                root.CFrame = CFrame.new(Vector3.new(desired.X, root.Position.Y, desired.Z), Vector3.new(hroot.Position.X, root.Position.Y, hroot.Position.Z))
+            end
+        end
+    end
+end)
+ 
 ---------------------------------------------------------------- SKILLS
 local lastPress = {}
 local function pressKey(k, hold)
@@ -235,6 +360,12 @@ task.spawn(function()
             local root = getRoot()
             if root then go = (State.target.Position - root.Position).Magnitude <= S.Range end
         end
+        if not go and Cfg.Hunt.Enabled and HuntState.target then
+            local root = getRoot()
+            local c = HuntState.target.Character
+            local hroot = c and c:FindFirstChild("HumanoidRootPart")
+            if root and hroot then go = (hroot.Position - root.Position).Magnitude <= S.Range end
+        end
         if go then
             for _, k in ipairs(SKILL_ORDER) do
                 if not alive then break end
@@ -248,13 +379,19 @@ task.spawn(function()
     end
 end)
  
----------------------------------------------------------------- ENERGY
-local hooked = {}
-local energyObjs = {}
+---------------------------------------------------------------- ENERGY / CELL (client-side value scan+force)
+-- Same trick for both: find NumberValue/IntValue instances (and numeric attributes) whose
+-- name matches a keyword list, then keep overwriting them. Only works if the game trusts
+-- that client-visible value as the real one; if the server tracks it authoritatively
+-- (most currencies do), this will get overwritten back or flagged. Test it and tell me
+-- what happens - if it doesn't stick, we need to look at the actual RemoteEvent that
+-- grants Cells instead of the display value.
+local hookedEnergy, energyObjs = {}, {}
+local hookedCell, cellObjs = {}, {}
  
-local function parseKeywords()
+local function parseList(str)
     local list = {}
-    for w in string.gmatch(string.lower(Cfg.Misc.EnergyKeywords), "[^,%s]+") do list[#list + 1] = w end
+    for w in string.gmatch(string.lower(str), "[^,%s]+") do list[#list + 1] = w end
     return list
 end
  
@@ -266,18 +403,18 @@ local function nameMatches(name, kws)
     return false
 end
  
-local function scanEnergy()
-    local kws = parseKeywords()
-    energyObjs = {}
+local function scanValues(keywordStr, hookedTbl, objTbl, enabledFn, valueFn)
+    local kws = parseList(keywordStr)
+    for k in pairs(objTbl) do objTbl[k] = nil end
     if #kws == 0 then return end
     local function check(o)
         if (o:IsA("NumberValue") or o:IsA("IntValue")) and nameMatches(o.Name, kws) then
-            energyObjs[#energyObjs + 1] = o
-            if not hooked[o] then
-                hooked[o] = true
+            objTbl[#objTbl + 1] = o
+            if not hookedTbl[o] then
+                hookedTbl[o] = true
                 conn(o:GetPropertyChangedSignal("Value"), function()
-                    if Cfg.Misc.InfEnergy and o.Value < Cfg.Misc.EnergyValue * 0.5 then
-                        o.Value = Cfg.Misc.EnergyValue
+                    if enabledFn() and o.Value < valueFn() * 0.5 then
+                        o.Value = valueFn()
                     end
                 end)
             end
@@ -286,39 +423,178 @@ local function scanEnergy()
     for _, o in ipairs(LP:GetDescendants()) do check(o) end
     local c = LP.Character
     if c then for _, o in ipairs(c:GetDescendants()) do check(o) end end
+    -- leaderstats / currency folders often live directly under the player, not nested
+    local ls = LP:FindFirstChild("leaderstats")
+    if ls then for _, o in ipairs(ls:GetChildren()) do check(o) end end
 end
  
-local function forceEnergy()
-    local v, kws = Cfg.Misc.EnergyValue, parseKeywords()
-    for _, o in ipairs(energyObjs) do
-        if o.Parent then pcall(function() o.Value = v end) end
+local function forceValues(objTbl, keywordStr, value)
+    local kws = parseList(keywordStr)
+    for _, o in ipairs(objTbl) do
+        if o.Parent then pcall(function() o.Value = value end) end
     end
     local function attrs(inst)
         if not inst then return end
         for name, val in pairs(inst:GetAttributes()) do
-            if type(val) == "number" and nameMatches(name, kws) then inst:SetAttribute(name, v) end
+            if type(val) == "number" and nameMatches(name, kws) then inst:SetAttribute(name, value) end
         end
     end
     attrs(LP.Character)
     attrs(LP)
 end
  
+local function scanEnergy() scanValues(Cfg.Misc.EnergyKeywords, hookedEnergy, energyObjs, function() return Cfg.Misc.InfEnergy end, function() return Cfg.Misc.EnergyValue end) end
+local function forceEnergy() forceValues(energyObjs, Cfg.Misc.EnergyKeywords, Cfg.Misc.EnergyValue) end
+local function scanCell() scanValues(Cfg.Misc.CellKeywords, hookedCell, cellObjs, function() return Cfg.Misc.InfCell end, function() return Cfg.Misc.CellValue end) end
+local function forceCell() forceValues(cellObjs, Cfg.Misc.CellKeywords, Cfg.Misc.CellValue) end
+ 
 task.spawn(function()
     task.wait(2)
     while alive do
         if Cfg.Misc.InfEnergy then pcall(scanEnergy) end
+        if Cfg.Misc.InfCell then pcall(scanCell) end
         task.wait(4)
     end
 end)
 task.spawn(function()
     while alive do
         if Cfg.Misc.InfEnergy then pcall(forceEnergy) end
+        if Cfg.Misc.InfCell then pcall(forceCell) end
         task.wait(0.2)
     end
 end)
 conn(LP.CharacterAdded, function()
     task.wait(1.5)
     pcall(scanEnergy)
+    pcall(scanCell)
+end)
+ 
+---------------------------------------------------------------- GODMODE
+-- Forces Health back to Max the instant it drops. Not a true server-side invincibility -
+-- if the server tracks health authoritatively and applies lethal damage in one shot before
+-- this can react, or the game removes you from the match server-side on hit, this won't save you.
+-- But for anything that damages you incrementally, it effectively negates it.
+--
+-- GodModeUntouchable additionally sets CanTouch/CanQuery false on your own parts, so enemy
+-- melee (Touched-based) and hitscan/raycast (FindPartOnRay-based) attacks skip over you at the
+-- detection stage - before any damage remote even fires. This is the "bedwars-style" part:
+-- most PvP damage in these games starts from your hitbox being found, so removing yourself
+-- from that search is stronger than reacting to damage after the fact.
+local godHooked = {}
+local untouchableApplied = {}
+ 
+local function applyUntouchable(char, on)
+    for _, p in ipairs(char:GetDescendants()) do
+        if p:IsA("BasePart") then
+            if on then
+                if untouchableApplied[p] == nil then
+                    untouchableApplied[p] = {CanTouch = p.CanTouch, CanQuery = p.CanQuery}
+                end
+                p.CanTouch = false
+                p.CanQuery = false
+            elseif untouchableApplied[p] then
+                p.CanTouch = untouchableApplied[p].CanTouch
+                p.CanQuery = untouchableApplied[p].CanQuery
+            end
+        end
+    end
+    if not on then untouchableApplied = {} end
+end
+ 
+local function hookGodmode(char)
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if not hum or godHooked[hum] then return end
+    godHooked[hum] = true
+    conn(hum:GetPropertyChangedSignal("Health"), function()
+        if Cfg.Misc.GodMode and hum.Health < hum.MaxHealth and hum.Health > 0 then
+            hum.Health = hum.MaxHealth
+        end
+    end)
+end
+ 
+local wasUntouchable = false
+conn(RunService.Heartbeat, function()
+    local char = LP.Character
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+ 
+    if hum and Cfg.Misc.GodMode then
+        hookGodmode(char)
+        if hum.Health < hum.MaxHealth and hum.Health > 0 then
+            hum.Health = hum.MaxHealth
+        end
+    end
+ 
+    if char then
+        local want = Cfg.Misc.GodMode and Cfg.Misc.GodModeUntouchable
+        if want and not wasUntouchable then
+            applyUntouchable(char, true)
+            wasUntouchable = true
+        elseif not want and wasUntouchable then
+            applyUntouchable(char, false)
+            wasUntouchable = false
+        elseif want then
+            -- catch newly-added parts (e.g. accessories that load in late)
+            applyUntouchable(char, true)
+        end
+    end
+end)
+ 
+conn(LP.CharacterAdded, function(char)
+    task.wait(0.2)
+    hookGodmode(char)
+    wasUntouchable = false
+end)
+if LP.Character then hookGodmode(LP.Character) end
+ 
+---------------------------------------------------------------- AUTOPLAY (auto-respawn)
+-- On death, waits a moment then tries LP:LoadCharacter(). If that doesn't bring you back
+-- (some games gate respawn behind a UI button or a delay/vote), it also scans PlayerGui for
+-- any button whose name or text suggests "respawn/revive/continue" and clicks it directly.
+local function tryClickRespawnButtons()
+    local pg = LP:FindFirstChild("PlayerGui")
+    if not pg then return end
+    local keywords = {"respawn", "revive", "continue", "rejoin", "playagain"}
+    for _, obj in ipairs(pg:GetDescendants()) do
+        if obj:IsA("TextButton") or obj:IsA("ImageButton") then
+            local hay = string.lower(obj.Name .. " " .. (obj:IsA("TextButton") and obj.Text or ""))
+            for _, kw in ipairs(keywords) do
+                if string.find(hay, kw, 1, true) then
+                    pcall(function()
+                        if firesignal then
+                            firesignal(obj.MouseButton1Click)
+                        else
+                            local pos = obj.AbsolutePosition + obj.AbsoluteSize / 2
+                            VIM:SendMouseButtonEvent(pos.X, pos.Y, 0, true, game, 1)
+                            task.wait(0.05)
+                            VIM:SendMouseButtonEvent(pos.X, pos.Y, 0, false, game, 1)
+                        end
+                    end)
+                    break
+                end
+            end
+        end
+    end
+end
+ 
+conn(LP.CharacterAdded, function(char)
+    local hum = char:WaitForChild("Humanoid", 5)
+    if not hum then return end
+    conn(hum.Died, function()
+        if not Cfg.Misc.AutoPlay then return end
+        task.spawn(function()
+            task.wait(Cfg.Misc.AutoPlayRespawnDelay)
+            pcall(function() LP:LoadCharacter() end)
+        end)
+    end)
+end)
+ 
+task.spawn(function()
+    while alive do
+        task.wait(1)
+        if Cfg.Misc.AutoPlay and Cfg.Misc.AutoPlayClickButtons then
+            pcall(tryClickRespawnButtons)
+        end
+    end
 end)
  
 ---------------------------------------------------------------- MOVEMENT
@@ -332,10 +608,10 @@ conn(RunService.RenderStepped, function(dt)
  
     if M.ApplySpeed then
         if hum.WalkSpeed ~= M.WalkSpeed then hum.WalkSpeed = M.WalkSpeed end
-        pcall(function()
-            hum.UseJumpPower = true
-            if hum.JumpPower ~= M.Jump then hum.JumpPower = M.Jump end
-        end)
+        -- force super jump regardless of whether this game uses JumpPower or JumpHeight
+        pcall(function() hum.UseJumpPower = true end)
+        if hum.JumpPower ~= M.Jump then pcall(function() hum.JumpPower = M.Jump end) end
+        pcall(function() hum.JumpHeight = M.Jump end)
     end
  
     if M.Fly then
@@ -358,14 +634,26 @@ conn(RunService.RenderStepped, function(dt)
     end
 end)
  
+local noclipOriginal = {}
 conn(RunService.Stepped, function()
-    if not Cfg.Move.Noclip then return end
     local char = LP.Character
     if not char then return end
-    for _, p in ipairs(char:GetDescendants()) do
-        if p:IsA("BasePart") then p.CanCollide = false end
+    if Cfg.Move.Noclip then
+        for _, p in ipairs(char:GetDescendants()) do
+            if p:IsA("BasePart") then
+                if noclipOriginal[p] == nil then noclipOriginal[p] = p.CanCollide end
+                p.CanCollide = false
+            end
+        end
+    elseif next(noclipOriginal) ~= nil then
+        -- noclip was just turned off: restore every part we touched, then forget them
+        for p, wasCollide in pairs(noclipOriginal) do
+            if p and p.Parent then pcall(function() p.CanCollide = wasCollide end) end
+        end
+        noclipOriginal = {}
     end
 end)
+conn(LP.CharacterAdded, function() noclipOriginal = {} end)
  
 ---------------------------------------------------------------- UI HELPERS
 local C = {
@@ -595,7 +883,21 @@ slider(pTarget, "Max World Y", {"Target", "MaxWorldY"}, 0, 2000, 5)
 slider(pTarget, "Min Distance", {"Target", "MinDist"}, 0, 200, 1)
 button(pTarget, "Clear Blacklist", function() Blacklist = {} setStatus("blacklist cleared") end)
  
-local pSkills = addPage("Skills", 3)
+local pHunt = addPage("Hunt", 3)
+header(pHunt, "PVP AUTO HUNT")
+toggle(pHunt, "Auto Hunt Players", {"Hunt", "Enabled"}, function() HuntState.target = nil end)
+cycle(pHunt, "Target Priority", {"Hunt", "Priority"}, {"Nearest", "LowestHealth"})
+slider(pHunt, "Search Range", {"Hunt", "Range"}, 20, 1000, 10)
+toggle(pHunt, "Hover Above Head", {"Hunt", "HoverAbove"})
+slider(pHunt, "Hover Height", {"Hunt", "HoverHeight"}, 2, 60, 1)
+slider(pHunt, "Hover Snap Distance", {"Hunt", "HoverSnap"}, 0.5, 20, 0.5)
+slider(pHunt, "Engage Distance (ground mode)", {"Hunt", "EngageDist"}, 2, 60, 1)
+slider(pHunt, "Retarget Cooldown (s)", {"Hunt", "RetargetCD"}, 0.05, 3, 0.05)
+slider(pHunt, "Switch If Closer By", {"Hunt", "SwitchIfCloser"}, 0, 100, 1)
+header(pHunt, "NOTE")
+new("TextLabel", {Size = UDim2.new(1, 0, 0, 50), BackgroundTransparency = 1, TextWrapped = true, Text = "Uses the Skills tab's keys/cooldowns to attack once in Engage Distance. Turn on some skills there too.", TextColor3 = C.dim, Font = Enum.Font.Gotham, TextSize = 11, TextXAlignment = Enum.TextXAlignment.Left}, pHunt)
+ 
+local pSkills = addPage("Skills", 4)
 header(pSkills, "AUTO SKILL")
 toggle(pSkills, "Skill Spam (always)", {"Skills", "Enabled"})
 slider(pSkills, "Cycle Interval (s)", {"Skills", "CycleInterval"}, 0.05, 3, 0.05)
@@ -608,7 +910,7 @@ for _, k in ipairs(SKILL_ORDER) do
     slider(pSkills, "Skill " .. k .. " cooldown (s)", {"Skills", "Cooldowns", k}, 0, 30, 0.1)
 end
  
-local pMove = addPage("Movement", 4)
+local pMove = addPage("Movement", 5)
 header(pMove, "MOVEMENT")
 toggle(pMove, "Apply Speed / Jump", {"Move", "ApplySpeed"})
 slider(pMove, "WalkSpeed", {"Move", "WalkSpeed"}, 16, 300, 1)
@@ -617,11 +919,23 @@ toggle(pMove, "Fly (WASD, Space up, Ctrl down)", {"Move", "Fly"})
 slider(pMove, "Fly Speed", {"Move", "FlySpeed"}, 10, 300, 1)
 toggle(pMove, "Noclip", {"Move", "Noclip"})
  
-local pMisc = addPage("Misc", 5)
+local pMisc = addPage("Misc", 6)
+header(pMisc, "GODMODE")
+toggle(pMisc, "God Mode (force full health)", {"Misc", "GodMode"})
+toggle(pMisc, "Untouchable (skip enemy hit detection)", {"Misc", "GodModeUntouchable"})
+header(pMisc, "AUTOPLAY")
+toggle(pMisc, "Auto Respawn On Death", {"Misc", "AutoPlay"})
+slider(pMisc, "Respawn Delay (s)", {"Misc", "AutoPlayRespawnDelay"}, 0, 10, 0.1)
+toggle(pMisc, "Also Auto-Click Respawn Buttons", {"Misc", "AutoPlayClickButtons"})
 header(pMisc, "ENERGY")
 toggle(pMisc, "Infinite Energy (client values)", {"Misc", "InfEnergy"})
 textbox(pMisc, "Energy keywords (comma separated)", {"Misc", "EnergyKeywords"}, function() task.spawn(scanEnergy) end)
 slider(pMisc, "Energy Value", {"Misc", "EnergyValue"}, 100, 999999, 100)
+header(pMisc, "CELL (currency)")
+toggle(pMisc, "Infinite Cell (client values)", {"Misc", "InfCell"})
+textbox(pMisc, "Cell keywords (comma separated)", {"Misc", "CellKeywords"}, function() task.spawn(scanCell) end)
+slider(pMisc, "Cell Value", {"Misc", "CellValue"}, 1000, 999999999, 1000)
+button(pMisc, "Rescan Cell Now", function() task.spawn(scanCell) setStatus("cell rescan requested") end)
 header(pMisc, "KEYBINDS")
 keybind(pMisc, "Toggle UI", {"Misc", "ToggleUI"})
 keybind(pMisc, "Toggle AutoFarm", {"Misc", "ToggleFarm"})
@@ -634,6 +948,9 @@ local function unload()
     pcall(function()
         local h = LP.Character and LP.Character:FindFirstChildOfClass("Humanoid")
         if h then h.PlatformStand = false end
+    end)
+    pcall(function()
+        if LP.Character and wasUntouchable then applyUntouchable(LP.Character, false) end
     end)
     pcall(function() Gui:Destroy() end)
     pcall(function() if getgenv then getgenv().PinghyuHubUnload = nil end end)
