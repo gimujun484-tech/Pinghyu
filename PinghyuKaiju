@@ -80,6 +80,12 @@ local DEFAULT = {
         AutoPlay = false,
         AutoPlayRespawnDelay = 1.5,
         AutoPlayClickButtons = true, -- also try clicking any "Respawn/Revive/Continue" GUI button
+        Invisible = false,  -- visual-only, local view (see note below)
+        SkyHide = false,    -- actually relocates your character far into the sky so other
+                             -- clients can't see or reach you. NOTE: while active your real
+                             -- position is up there too, so farm/hunt/combat won't function -
+                             -- this is a "get safe" tool, not a "fight invisibly" tool.
+        SkyHeight = 3000,
         ToggleUI = "RightShift",
         ToggleFarm = "F6",
     },
@@ -124,6 +130,8 @@ local function safeStart()
     Cfg.Move.Noclip = false
     Cfg.Misc.GodMode = false
     Cfg.Misc.AutoPlay = false
+    Cfg.Misc.Invisible = false
+    Cfg.Misc.SkyHide = false
 end
  
 loadCfg()
@@ -597,8 +605,86 @@ task.spawn(function()
     end
 end)
  
+---------------------------------------------------------------- INVISIBILITY
+-- Pure visual: sets every part/decal's Transparency to 1 so other clients render you as
+-- invisible. This isn't gated by server stat validation the way Health/WalkSpeed are, so
+-- it should work even in games that fight back on other hacks. Re-applies continuously to
+-- catch new accessories/respawns.
+local invisOriginal = {}
+local function applyInvisible(char, on)
+    for _, p in ipairs(char:GetDescendants()) do
+        if p:IsA("BasePart") or p:IsA("Decal") or p:IsA("Texture") then
+            if on then
+                if invisOriginal[p] == nil then invisOriginal[p] = p.Transparency end
+                if p.Name ~= "HumanoidRootPart" then p.Transparency = 1 end
+            elseif invisOriginal[p] ~= nil then
+                p.Transparency = invisOriginal[p]
+            end
+        end
+    end
+    if not on then invisOriginal = {} end
+end
+ 
+local wasInvisible = false
+conn(RunService.Heartbeat, function()
+    local char = LP.Character
+    if not char then return end
+    local want = Cfg.Misc.Invisible
+    if want ~= wasInvisible then
+        applyInvisible(char, want)
+        wasInvisible = want
+    elseif want then
+        applyInvisible(char, true) -- catch newly streamed-in parts
+    end
+end)
+conn(LP.CharacterAdded, function() wasInvisible = false end)
+ 
+---------------------------------------------------------------- SKY HIDE
+-- Actually moves your character far above the map so you're out of render/interaction
+-- range for everyone else - a real hide, not a visual trick. Trade-off: your real position
+-- (used for all server-side checks) is now up there too, so farm/hunt/skills go idle while
+-- this is on. Toggling off teleports you back to where you were.
+local skyHideReturn = nil
+local skyHideActive = false
+ 
+conn(RunService.Heartbeat, function()
+    local root = getRoot()
+    if not root then return end
+ 
+    if Cfg.Misc.SkyHide and not skyHideActive then
+        skyHideReturn = root.CFrame
+        skyHideActive = true
+    elseif not Cfg.Misc.SkyHide and skyHideActive then
+        if skyHideReturn then
+            root.CFrame = skyHideReturn
+            root.AssemblyLinearVelocity = Vector3.zero
+        end
+        skyHideActive = false
+        skyHideReturn = nil
+        local hum = LP.Character and LP.Character:FindFirstChildOfClass("Humanoid")
+        if hum and not Cfg.Move.Fly then hum.PlatformStand = false end
+    end
+ 
+    if Cfg.Misc.SkyHide then
+        local pos = root.Position
+        local desiredY = Cfg.Misc.SkyHeight
+        if math.abs(pos.Y - desiredY) > 10 then
+            root.CFrame = CFrame.new(pos.X, desiredY, pos.Z)
+        end
+        root.AssemblyLinearVelocity = Vector3.zero
+        local hum = LP.Character and LP.Character:FindFirstChildOfClass("Humanoid")
+        if hum then hum.PlatformStand = true end
+    end
+end)
+ 
+conn(LP.CharacterAdded, function()
+    skyHideActive = false
+    skyHideReturn = nil
+end)
+ 
 ---------------------------------------------------------------- MOVEMENT
 local flying = false
+local spaceWasDown = false
 conn(RunService.RenderStepped, function(dt)
     local char = LP.Character
     local hum = char and char:FindFirstChildOfClass("Humanoid")
@@ -607,11 +693,39 @@ conn(RunService.RenderStepped, function(dt)
     local M = Cfg.Move
  
     if M.ApplySpeed then
+        -- method 1: standard Humanoid properties (works if the game uses stock movement)
         if hum.WalkSpeed ~= M.WalkSpeed then hum.WalkSpeed = M.WalkSpeed end
-        -- force super jump regardless of whether this game uses JumpPower or JumpHeight
         pcall(function() hum.UseJumpPower = true end)
         if hum.JumpPower ~= M.Jump then pcall(function() hum.JumpPower = M.Jump end) end
         pcall(function() hum.JumpHeight = M.Jump end)
+ 
+        -- method 2: direct physics push based on WASD, independent of Humanoid entirely.
+        -- Covers games (common for giant-creature games like this one) that drive movement
+        -- with their own controller and ignore WalkSpeed completely. Only kicks in when
+        -- a movement key is actually held, and only touches horizontal velocity so gravity
+        -- and jump arcs aren't disturbed.
+        if not M.Fly then
+            local cam = Camera.CFrame
+            local dir = Vector3.zero
+            if UIS:IsKeyDown(Enum.KeyCode.W) then dir += cam.LookVector end
+            if UIS:IsKeyDown(Enum.KeyCode.S) then dir -= cam.LookVector end
+            if UIS:IsKeyDown(Enum.KeyCode.A) then dir -= cam.RightVector end
+            if UIS:IsKeyDown(Enum.KeyCode.D) then dir += cam.RightVector end
+            dir = Vector3.new(dir.X, 0, dir.Z)
+            if dir.Magnitude > 0.1 then
+                local v = root.AssemblyLinearVelocity
+                local push = dir.Unit * M.WalkSpeed
+                root.AssemblyLinearVelocity = Vector3.new(push.X, v.Y, push.Z)
+            end
+ 
+            -- forced jump: on Space press (not held, so it doesn't fling you endlessly),
+            -- set a strong upward velocity directly rather than relying on JumpPower.
+            if UIS:IsKeyDown(Enum.KeyCode.Space) and not spaceWasDown then
+                local v = root.AssemblyLinearVelocity
+                root.AssemblyLinearVelocity = Vector3.new(v.X, M.Jump, v.Z)
+            end
+        end
+        spaceWasDown = UIS:IsKeyDown(Enum.KeyCode.Space)
     end
  
     if M.Fly then
@@ -920,6 +1034,11 @@ slider(pMove, "Fly Speed", {"Move", "FlySpeed"}, 10, 300, 1)
 toggle(pMove, "Noclip", {"Move", "Noclip"})
  
 local pMisc = addPage("Misc", 6)
+header(pMisc, "INVISIBILITY")
+toggle(pMisc, "Invisible (visual only, your screen)", {"Misc", "Invisible"})
+header(pMisc, "SKY HIDE (real hide, farm/hunt pause while on)")
+toggle(pMisc, "Sky Hide", {"Misc", "SkyHide"})
+slider(pMisc, "Sky Height", {"Misc", "SkyHeight"}, 500, 10000, 100)
 header(pMisc, "GODMODE")
 toggle(pMisc, "God Mode (force full health)", {"Misc", "GodMode"})
 toggle(pMisc, "Untouchable (skip enemy hit detection)", {"Misc", "GodModeUntouchable"})
@@ -951,6 +1070,11 @@ local function unload()
     end)
     pcall(function()
         if LP.Character and wasUntouchable then applyUntouchable(LP.Character, false) end
+        if LP.Character and wasInvisible then applyInvisible(LP.Character, false) end
+        if skyHideActive and skyHideReturn then
+            local r = getRoot()
+            if r then r.CFrame = skyHideReturn end
+        end
     end)
     pcall(function() Gui:Destroy() end)
     pcall(function() if getgenv then getgenv().PinghyuHubUnload = nil end end)
