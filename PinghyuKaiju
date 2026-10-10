@@ -1,143 +1,20 @@
---!nocheck
--- pinghyu Hub // Kaiju Alpha
--- Roblox Luau executor script (client-side). Untested in-game: tune settings in the UI.
--- Toggle UI: RightShift (rebindable) | Toggle AutoFarm: F6 (rebindable)
- 
+-- BadFight Client // Vape-style module list
+-- RightShift = show/hide UI. Click a module name to toggle it. Click the dots for its
+-- settings and its KEYBIND (so you can toggle it in-game without clicking anything).
+
+print("[BadFight] starting...")
+local __ok, __err = xpcall(function()
+
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local UIS = game:GetService("UserInputService")
 local VIM = game:GetService("VirtualInputManager")
 local HttpService = game:GetService("HttpService")
+local TextService = game:GetService("TextService")
+local TweenService = game:GetService("TweenService")
 local CoreGui = game:GetService("CoreGui")
-local Workspace = game:GetService("Workspace")
 local LP = Players.LocalPlayer
-local Camera = Workspace.CurrentCamera
- 
--- unload previous instance if re-executed
-pcall(function()
-    if getgenv and getgenv().PinghyuHubUnload then getgenv().PinghyuHubUnload() end
-end)
- 
----------------------------------------------------------------- CONFIG
-local SKILL_ORDER = {"1", "2", "3", "4", "5", "R", "T"}
-local KEYCODES = {
-    ["1"] = Enum.KeyCode.One, ["2"] = Enum.KeyCode.Two, ["3"] = Enum.KeyCode.Three,
-    ["4"] = Enum.KeyCode.Four, ["5"] = Enum.KeyCode.Five, ["R"] = Enum.KeyCode.R, ["T"] = Enum.KeyCode.T,
-}
- 
-local DEFAULT = {
-    Farm = {
-        Enabled = false,
-        Priority = "Nearest",      -- Nearest / Largest / Random
-        Range = 400,               -- max target search distance
-        SideDist = 22,             -- distance from target edge
-        Height = 5,                -- height offset
-        RepositionThreshold = 6,   -- only re-teleport if farther than this from ideal spot
-        RetargetCD = 0.5,          -- min seconds between target searches
-        TargetTimeout = 20,        -- seconds on one target before blacklist (0 = off)
-        BlacklistTime = 30,        -- seconds a timed-out target is ignored
-    },
-    Target = {
-        MinSize = 18, MaxSize = 260,   -- part Size.Magnitude range
-        MinY = 2.5, MaxY = 65,         -- part height range
-        MaxWorldY = 160,               -- ignore parts above this world Y
-        MinDist = 8,                   -- ignore parts closer than this
-    },
-    Hunt = {
-        Enabled = false,
-        Priority = "Nearest",      -- Nearest / LowestHealth
-        Range = 300,               -- max search distance for players
-        EngageDist = 12,           -- how close to get before stopping/attacking (ground mode)
-        RetargetCD = 0.4,
-        SwitchIfCloser = 15,       -- switch target if a new one is this much closer than current
-        HoverAbove = true,         -- hold position above the target's head instead of ground engage
-        HoverHeight = 8,           -- how far above their head to hover
-        HoverSnap = 3,             -- reposition once you drift this far from the hover spot
-    },
-    Skills = {
-        Enabled = false,           -- spam skills even without a farm target
-        Keys = {["1"]=true, ["2"]=true, ["3"]=true, ["4"]=true, ["5"]=true, ["R"]=true, ["T"]=true},
-        Cooldowns = {["1"]=0.5, ["2"]=0.5, ["3"]=0.5, ["4"]=0.5, ["5"]=0.5, ["R"]=0.5, ["T"]=0.5},
-        CycleInterval = 0.55,
-        HoldTime = 0.03,
-        KeyGap = 0.07,
-        Range = 40,                -- during autofarm, only fire when target is this close
-    },
-    Move = {
-        ApplySpeed = true, WalkSpeed = 55, Jump = 75,
-        Fly = false, FlySpeed = 80, Noclip = false,
-    },
-    Misc = {
-        InfEnergy = true,
-        EnergyKeywords = "energy,stamina,power,mana,gauge,fuel",
-        EnergyValue = 999999,
-        InfCell = false,
-        CellKeywords = "cell,cells,coin,coins,gold,currency,cash",
-        CellValue = 999999999,
-        GodMode = false,
-        GodModeMinHealth = 1,      -- if health ever drops below this before we catch it, treat as emergency (see below)
-        GodModeUntouchable = true, -- also make your parts untouchable/unqueryable so enemy hit detection misses you
-        AutoPlay = false,
-        AutoPlayRespawnDelay = 1.5,
-        AutoPlayClickButtons = true, -- also try clicking any "Respawn/Revive/Continue" GUI button
-        Invisible = false,  -- visual-only, local view (see note below)
-        SkyHide = false,    -- actually relocates your character far into the sky so other
-                             -- clients can't see or reach you. NOTE: while active your real
-                             -- position is up there too, so farm/hunt/combat won't function -
-                             -- this is a "get safe" tool, not a "fight invisibly" tool.
-        SkyHeight = 3000,
-        ToggleUI = "RightShift",
-        ToggleFarm = "F6",
-    },
-}
- 
-local function deepCopy(t)
-    local r = {}
-    for k, v in pairs(t) do r[k] = type(v) == "table" and deepCopy(v) or v end
-    return r
-end
- 
-local function merge(dst, src)
-    for k, v in pairs(src) do
-        if type(v) == "table" and type(dst[k]) == "table" then merge(dst[k], v)
-        elseif dst[k] ~= nil and type(dst[k]) == type(v) then dst[k] = v end
-    end
-end
- 
-local Cfg = deepCopy(DEFAULT)
-local FILE = "PinghyuHub_KaijuAlpha.json"
-local hasFS = type(writefile) == "function" and type(readfile) == "function" and type(isfile) == "function"
- 
-local function saveCfg()
-    if not hasFS then return false, "executor has no writefile" end
-    local ok, err = pcall(function() writefile(FILE, HttpService:JSONEncode(Cfg)) end)
-    return ok, ok and "saved" or tostring(err)
-end
- 
-local function loadCfg()
-    if not hasFS then return false, "executor has no readfile" end
-    if not isfile(FILE) then return false, "no saved config" end
-    local ok, data = pcall(function() return HttpService:JSONDecode(readfile(FILE)) end)
-    if not ok then return false, "bad config file" end
-    merge(Cfg, data)
-    return true, "loaded"
-end
- 
-local function safeStart()
-    Cfg.Farm.Enabled = false
-    Cfg.Hunt.Enabled = false
-    Cfg.Move.Fly = false
-    Cfg.Move.Noclip = false
-    Cfg.Misc.GodMode = false
-    Cfg.Misc.AutoPlay = false
-    Cfg.Misc.Invisible = false
-    Cfg.Misc.SkyHide = false
-end
- 
-loadCfg()
-safeStart()
- 
----------------------------------------------------------------- CORE STATE
+
 local alive = true
 local conns = {}
 local function conn(signal, fn)
@@ -145,979 +22,1343 @@ local function conn(signal, fn)
     conns[#conns + 1] = c
     return c
 end
- 
-local function getRoot()
-    local c = LP.Character
-    return c and c:FindFirstChild("HumanoidRootPart")
-end
- 
-local State = {target = nil, side = Vector3.xAxis, since = 0, lastPick = 0}
-local Cache, Blacklist = {}, {}
- 
----------------------------------------------------------------- TARGET CACHE
-local function admit(o)
-    if not o:IsA("BasePart") then return end
-    if not o.Anchored or not o.CanCollide then return end
-    if o.Size.Magnitude < 6 then return end
-    local m = o:FindFirstAncestorOfClass("Model")
-    if m and m:FindFirstChildOfClass("Humanoid") then return end
-    Cache[o] = true
-end
- 
-task.spawn(function()
-    local n = 0
-    for _, o in ipairs(Workspace:GetDescendants()) do
-        if not alive then return end
-        admit(o)
-        n += 1
-        if n % 400 == 0 then task.wait() end
+
+-- re-executing replaces the old copy instead of stacking a second one on top
+pcall(function() if getgenv and getgenv().BadFightUnload then getgenv().BadFightUnload() end end)
+pcall(function()
+    local p = CoreGui
+    if gethui then p = gethui() end
+    for _, n in ipairs({"BadFightClient", "BadFightESP", "BadFightHUD"}) do
+        local o = p:FindFirstChild(n)
+        if o then o:Destroy() end
     end
 end)
-conn(Workspace.DescendantAdded, admit)
-conn(Workspace.DescendantRemoving, function(o) Cache[o] = nil end)
- 
-local function pickTarget(root)
-    local T, F = Cfg.Target, Cfg.Farm
-    local rp, now = root.Position, os.clock()
-    local rangeSq, minSq = F.Range * F.Range, T.MinDist * T.MinDist
-    local best, bestScore, count = nil, -math.huge, 0
-    for part in pairs(Cache) do
-        if part.Parent then
-            local bl = Blacklist[part]
-            if not bl or bl < now then
-                if bl then Blacklist[part] = nil end
-                local s, p = part.Size, part.Position
-                local mag = s.Magnitude
-                if mag >= T.MinSize and mag <= T.MaxSize and s.Y >= T.MinY and s.Y <= T.MaxY and p.Y <= T.MaxWorldY then
-                    local d = p - rp
-                    local dsq = d:Dot(d)
-                    if dsq <= rangeSq and dsq >= minSq then
-                        if F.Priority == "Random" then
-                            count += 1
-                            if math.random(count) == 1 then best = part end
-                        else
-                            local score = (F.Priority == "Largest") and mag or -dsq
-                            if score > bestScore then bestScore, best = score, part end
-                        end
-                    end
-                end
-            end
-        end
-    end
-    return best
-end
- 
----------------------------------------------------------------- AUTOFARM
-conn(RunService.Heartbeat, function()
-    local F = Cfg.Farm
-    if not F.Enabled then State.target = nil return end
-    local root = getRoot()
-    if not root then return end
-    local now = os.clock()
-    local t = State.target
- 
-    if t then
-        if not t.Parent then
-            t = nil
-        elseif F.TargetTimeout > 0 and now - State.since > F.TargetTimeout then
-            Blacklist[t] = now + F.BlacklistTime
-            t = nil
-        elseif (t.Position - root.Position).Magnitude > F.Range + 20 then
-            t = nil
-        end
-    end
- 
-    if not t then
-        State.target = nil
-        if now - State.lastPick < F.RetargetCD then return end
-        State.lastPick = now
-        t = pickTarget(root)
-        if not t then return end
-        State.target, State.since = t, now
-        local off = Vector3.new(root.Position.X - t.Position.X, 0, root.Position.Z - t.Position.Z)
-        State.side = off.Magnitude > 0.5 and off.Unit or Vector3.xAxis
-    end
- 
-    local pos = t.Position
-    local edge = math.max(t.Size.X, t.Size.Z) * 0.5
-    local desired = pos + State.side * (edge + F.SideDist) + Vector3.new(0, F.Height, 0)
-    if (root.Position - desired).Magnitude > F.RepositionThreshold then
-        root.CFrame = CFrame.new(desired, pos)
-        root.AssemblyLinearVelocity = Vector3.zero
-    end
-end)
- 
----------------------------------------------------------------- HUNT (PvP auto-kill)
--- Finds other players, walks up to engage range, and lets the skill loop below fire on them.
-local HuntState = {target = nil, lastPick = 0}
- 
-local function getPlayerHealth(plr)
-    local c = plr.Character
-    local hum = c and c:FindFirstChildOfClass("Humanoid")
-    if not hum then return nil end
-    return hum.Health, hum
-end
- 
-local function pickHuntTarget(root)
-    local H = Cfg.Hunt
-    local rp = root.Position
-    local best, bestScore = nil, math.huge
-    for _, plr in ipairs(Players:GetPlayers()) do
-        if plr ~= LP then
-            local c = plr.Character
-            local hp, hum = getPlayerHealth(plr)
-            local hroot = c and c:FindFirstChild("HumanoidRootPart")
-            if c and hum and hroot and hp and hp > 0 then
-                local d = (hroot.Position - rp).Magnitude
-                if d <= H.Range then
-                    local score
-                    if H.Priority == "LowestHealth" then score = hp
-                    else score = d end
-                    if score < bestScore then bestScore, best = score, plr end
-                end
-            end
-        end
-    end
-    return best
-end
- 
-conn(RunService.Heartbeat, function()
-    local H = Cfg.Hunt
-    if not H.Enabled then HuntState.target = nil return end
-    local root = getRoot()
-    if not root then return end
-    local now = os.clock()
- 
-    local plr = HuntState.target
-    if plr then
-        local c = plr.Character
-        local hp = getPlayerHealth(plr)
-        local hroot = c and c:FindFirstChild("HumanoidRootPart")
-        if not c or not hroot or not hp or hp <= 0 then
-            plr = nil
-        elseif (hroot.Position - root.Position).Magnitude > H.Range + 30 then
-            plr = nil
-        end
-    end
- 
-    if now - HuntState.lastPick >= H.RetargetCD then
-        HuntState.lastPick = now
-        local candidate = pickHuntTarget(root)
-        if candidate and candidate ~= plr then
-            if not plr then
-                plr = candidate
-            else
-                -- only steal the current target if the new one is meaningfully closer
-                local oldRoot = plr.Character and plr.Character:FindFirstChild("HumanoidRootPart")
-                local newRoot = candidate.Character and candidate.Character:FindFirstChild("HumanoidRootPart")
-                if oldRoot and newRoot then
-                    local oldD = (oldRoot.Position - root.Position).Magnitude
-                    local newD = (newRoot.Position - root.Position).Magnitude
-                    if oldD - newD >= H.SwitchIfCloser then plr = candidate end
-                end
-            end
-        end
-    end
- 
-    HuntState.target = plr
-    if not plr then return end
- 
-    local hroot = plr.Character:FindFirstChild("HumanoidRootPart")
-    if not hroot then return end
-    local headPos = hroot.Position + Vector3.new(0, 2.5, 0) -- rough head offset above root
- 
-    if Cfg.Hunt.HoverAbove then
-        local desired = headPos + Vector3.new(0, Cfg.Hunt.HoverHeight, 0)
-        if (root.Position - desired).Magnitude > Cfg.Hunt.HoverSnap then
-            root.CFrame = CFrame.new(desired, headPos)
-            root.AssemblyLinearVelocity = Vector3.zero
-        else
-            -- close enough to the hover spot: just keep facing down at them, don't fight gravity every frame
-            root.CFrame = CFrame.new(root.Position, headPos)
-            root.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
-        end
-    else
-        local d = (hroot.Position - root.Position).Magnitude
-        if d > Cfg.Hunt.EngageDist then
-            local dir = (hroot.Position - root.Position)
-            dir = Vector3.new(dir.X, 0, dir.Z)
-            if dir.Magnitude > 0.1 then
-                local desired = hroot.Position - dir.Unit * Cfg.Hunt.EngageDist
-                root.CFrame = CFrame.new(Vector3.new(desired.X, root.Position.Y, desired.Z), Vector3.new(hroot.Position.X, root.Position.Y, hroot.Position.Z))
-            end
-        end
-    end
-end)
- 
----------------------------------------------------------------- SKILLS
-local lastPress = {}
-local function pressKey(k, hold)
-    pcall(function()
-        VIM:SendKeyEvent(true, KEYCODES[k], false, game)
-        task.wait(hold)
-        VIM:SendKeyEvent(false, KEYCODES[k], false, game)
-    end)
-end
- 
-task.spawn(function()
-    while alive do
-        local S = Cfg.Skills
-        task.wait(math.max(S.CycleInterval, 0.05))
-        local go = S.Enabled
-        if not go and Cfg.Farm.Enabled and State.target then
-            local root = getRoot()
-            if root then go = (State.target.Position - root.Position).Magnitude <= S.Range end
-        end
-        if not go and Cfg.Hunt.Enabled and HuntState.target then
-            local root = getRoot()
-            local c = HuntState.target.Character
-            local hroot = c and c:FindFirstChild("HumanoidRootPart")
-            if root and hroot then go = (hroot.Position - root.Position).Magnitude <= S.Range end
-        end
-        if go then
-            for _, k in ipairs(SKILL_ORDER) do
-                if not alive then break end
-                if S.Keys[k] and os.clock() - (lastPress[k] or 0) >= S.Cooldowns[k] then
-                    lastPress[k] = os.clock()
-                    pressKey(k, S.HoldTime)
-                    task.wait(S.KeyGap)
-                end
-            end
-        end
-    end
-end)
- 
----------------------------------------------------------------- ENERGY / CELL (client-side value scan+force)
--- Same trick for both: find NumberValue/IntValue instances (and numeric attributes) whose
--- name matches a keyword list, then keep overwriting them. Only works if the game trusts
--- that client-visible value as the real one; if the server tracks it authoritatively
--- (most currencies do), this will get overwritten back or flagged. Test it and tell me
--- what happens - if it doesn't stick, we need to look at the actual RemoteEvent that
--- grants Cells instead of the display value.
-local hookedEnergy, energyObjs = {}, {}
-local hookedCell, cellObjs = {}, {}
- 
-local function parseList(str)
-    local list = {}
-    for w in string.gmatch(string.lower(str), "[^,%s]+") do list[#list + 1] = w end
-    return list
-end
- 
-local function nameMatches(name, kws)
-    name = string.lower(name)
-    for _, w in ipairs(kws) do
-        if string.find(name, w, 1, true) then return true end
-    end
-    return false
-end
- 
-local function scanValues(keywordStr, hookedTbl, objTbl, enabledFn, valueFn)
-    local kws = parseList(keywordStr)
-    for k in pairs(objTbl) do objTbl[k] = nil end
-    if #kws == 0 then return end
-    local function check(o)
-        if (o:IsA("NumberValue") or o:IsA("IntValue")) and nameMatches(o.Name, kws) then
-            objTbl[#objTbl + 1] = o
-            if not hookedTbl[o] then
-                hookedTbl[o] = true
-                conn(o:GetPropertyChangedSignal("Value"), function()
-                    if enabledFn() and o.Value < valueFn() * 0.5 then
-                        o.Value = valueFn()
-                    end
-                end)
-            end
-        end
-    end
-    for _, o in ipairs(LP:GetDescendants()) do check(o) end
-    local c = LP.Character
-    if c then for _, o in ipairs(c:GetDescendants()) do check(o) end end
-    -- leaderstats / currency folders often live directly under the player, not nested
-    local ls = LP:FindFirstChild("leaderstats")
-    if ls then for _, o in ipairs(ls:GetChildren()) do check(o) end end
-end
- 
-local function forceValues(objTbl, keywordStr, value)
-    local kws = parseList(keywordStr)
-    for _, o in ipairs(objTbl) do
-        if o.Parent then pcall(function() o.Value = value end) end
-    end
-    local function attrs(inst)
-        if not inst then return end
-        for name, val in pairs(inst:GetAttributes()) do
-            if type(val) == "number" and nameMatches(name, kws) then inst:SetAttribute(name, value) end
-        end
-    end
-    attrs(LP.Character)
-    attrs(LP)
-end
- 
-local function scanEnergy() scanValues(Cfg.Misc.EnergyKeywords, hookedEnergy, energyObjs, function() return Cfg.Misc.InfEnergy end, function() return Cfg.Misc.EnergyValue end) end
-local function forceEnergy() forceValues(energyObjs, Cfg.Misc.EnergyKeywords, Cfg.Misc.EnergyValue) end
-local function scanCell() scanValues(Cfg.Misc.CellKeywords, hookedCell, cellObjs, function() return Cfg.Misc.InfCell end, function() return Cfg.Misc.CellValue end) end
-local function forceCell() forceValues(cellObjs, Cfg.Misc.CellKeywords, Cfg.Misc.CellValue) end
- 
-task.spawn(function()
-    task.wait(2)
-    while alive do
-        if Cfg.Misc.InfEnergy then pcall(scanEnergy) end
-        if Cfg.Misc.InfCell then pcall(scanCell) end
-        task.wait(4)
-    end
-end)
-task.spawn(function()
-    while alive do
-        if Cfg.Misc.InfEnergy then pcall(forceEnergy) end
-        if Cfg.Misc.InfCell then pcall(forceCell) end
-        task.wait(0.2)
-    end
-end)
-conn(LP.CharacterAdded, function()
-    task.wait(1.5)
-    pcall(scanEnergy)
-    pcall(scanCell)
-end)
- 
----------------------------------------------------------------- GODMODE
--- Forces Health back to Max the instant it drops. Not a true server-side invincibility -
--- if the server tracks health authoritatively and applies lethal damage in one shot before
--- this can react, or the game removes you from the match server-side on hit, this won't save you.
--- But for anything that damages you incrementally, it effectively negates it.
---
--- GodModeUntouchable additionally sets CanTouch/CanQuery false on your own parts, so enemy
--- melee (Touched-based) and hitscan/raycast (FindPartOnRay-based) attacks skip over you at the
--- detection stage - before any damage remote even fires. This is the "bedwars-style" part:
--- most PvP damage in these games starts from your hitbox being found, so removing yourself
--- from that search is stronger than reacting to damage after the fact.
-local godHooked = {}
-local untouchableApplied = {}
- 
-local function applyUntouchable(char, on)
-    for _, p in ipairs(char:GetDescendants()) do
-        if p:IsA("BasePart") then
-            if on then
-                if untouchableApplied[p] == nil then
-                    untouchableApplied[p] = {CanTouch = p.CanTouch, CanQuery = p.CanQuery}
-                end
-                p.CanTouch = false
-                p.CanQuery = false
-            elseif untouchableApplied[p] then
-                p.CanTouch = untouchableApplied[p].CanTouch
-                p.CanQuery = untouchableApplied[p].CanQuery
-            end
-        end
-    end
-    if not on then untouchableApplied = {} end
-end
- 
-local function hookGodmode(char)
-    local hum = char:FindFirstChildOfClass("Humanoid")
-    if not hum or godHooked[hum] then return end
-    godHooked[hum] = true
-    conn(hum:GetPropertyChangedSignal("Health"), function()
-        if Cfg.Misc.GodMode and hum.Health < hum.MaxHealth and hum.Health > 0 then
-            hum.Health = hum.MaxHealth
-        end
-    end)
-end
- 
-local wasUntouchable = false
-conn(RunService.Heartbeat, function()
-    local char = LP.Character
-    local hum = char and char:FindFirstChildOfClass("Humanoid")
- 
-    if hum and Cfg.Misc.GodMode then
-        hookGodmode(char)
-        if hum.Health < hum.MaxHealth and hum.Health > 0 then
-            hum.Health = hum.MaxHealth
-        end
-    end
- 
-    if char then
-        local want = Cfg.Misc.GodMode and Cfg.Misc.GodModeUntouchable
-        if want and not wasUntouchable then
-            applyUntouchable(char, true)
-            wasUntouchable = true
-        elseif not want and wasUntouchable then
-            applyUntouchable(char, false)
-            wasUntouchable = false
-        elseif want then
-            -- catch newly-added parts (e.g. accessories that load in late)
-            applyUntouchable(char, true)
-        end
-    end
-end)
- 
-conn(LP.CharacterAdded, function(char)
-    task.wait(0.2)
-    hookGodmode(char)
-    wasUntouchable = false
-end)
-if LP.Character then hookGodmode(LP.Character) end
- 
----------------------------------------------------------------- AUTOPLAY (auto-respawn)
--- On death, waits a moment then tries LP:LoadCharacter(). If that doesn't bring you back
--- (some games gate respawn behind a UI button or a delay/vote), it also scans PlayerGui for
--- any button whose name or text suggests "respawn/revive/continue" and clicks it directly.
-local function tryClickRespawnButtons()
-    local pg = LP:FindFirstChild("PlayerGui")
-    if not pg then return end
-    local keywords = {"respawn", "revive", "continue", "rejoin", "playagain"}
-    for _, obj in ipairs(pg:GetDescendants()) do
-        if obj:IsA("TextButton") or obj:IsA("ImageButton") then
-            local hay = string.lower(obj.Name .. " " .. (obj:IsA("TextButton") and obj.Text or ""))
-            for _, kw in ipairs(keywords) do
-                if string.find(hay, kw, 1, true) then
-                    pcall(function()
-                        if firesignal then
-                            firesignal(obj.MouseButton1Click)
-                        else
-                            local pos = obj.AbsolutePosition + obj.AbsoluteSize / 2
-                            VIM:SendMouseButtonEvent(pos.X, pos.Y, 0, true, game, 1)
-                            task.wait(0.05)
-                            VIM:SendMouseButtonEvent(pos.X, pos.Y, 0, false, game, 1)
-                        end
-                    end)
-                    break
-                end
-            end
-        end
-    end
-end
- 
-conn(LP.CharacterAdded, function(char)
-    local hum = char:WaitForChild("Humanoid", 5)
-    if not hum then return end
-    conn(hum.Died, function()
-        if not Cfg.Misc.AutoPlay then return end
-        task.spawn(function()
-            task.wait(Cfg.Misc.AutoPlayRespawnDelay)
-            pcall(function() LP:LoadCharacter() end)
-        end)
-    end)
-end)
- 
-task.spawn(function()
-    while alive do
-        task.wait(1)
-        if Cfg.Misc.AutoPlay and Cfg.Misc.AutoPlayClickButtons then
-            pcall(tryClickRespawnButtons)
-        end
-    end
-end)
- 
----------------------------------------------------------------- INVISIBILITY
--- Pure visual: sets every part/decal's Transparency to 1 so other clients render you as
--- invisible. This isn't gated by server stat validation the way Health/WalkSpeed are, so
--- it should work even in games that fight back on other hacks. Re-applies continuously to
--- catch new accessories/respawns.
-local invisOriginal = {}
-local function applyInvisible(char, on)
-    for _, p in ipairs(char:GetDescendants()) do
-        if p:IsA("BasePart") or p:IsA("Decal") or p:IsA("Texture") then
-            if on then
-                if invisOriginal[p] == nil then invisOriginal[p] = p.Transparency end
-                if p.Name ~= "HumanoidRootPart" then p.Transparency = 1 end
-            elseif invisOriginal[p] ~= nil then
-                p.Transparency = invisOriginal[p]
-            end
-        end
-    end
-    if not on then invisOriginal = {} end
-end
- 
-local wasInvisible = false
-conn(RunService.Heartbeat, function()
-    local char = LP.Character
-    if not char then return end
-    local want = Cfg.Misc.Invisible
-    if want ~= wasInvisible then
-        applyInvisible(char, want)
-        wasInvisible = want
-    elseif want then
-        applyInvisible(char, true) -- catch newly streamed-in parts
-    end
-end)
-conn(LP.CharacterAdded, function() wasInvisible = false end)
- 
----------------------------------------------------------------- SKY HIDE
--- Actually moves your character far above the map so you're out of render/interaction
--- range for everyone else - a real hide, not a visual trick. Trade-off: your real position
--- (used for all server-side checks) is now up there too, so farm/hunt/skills go idle while
--- this is on. Toggling off teleports you back to where you were.
-local skyHideReturn = nil
-local skyHideActive = false
- 
-conn(RunService.Heartbeat, function()
-    local root = getRoot()
-    if not root then return end
- 
-    if Cfg.Misc.SkyHide and not skyHideActive then
-        skyHideReturn = root.CFrame
-        skyHideActive = true
-    elseif not Cfg.Misc.SkyHide and skyHideActive then
-        if skyHideReturn then
-            root.CFrame = skyHideReturn
-            root.AssemblyLinearVelocity = Vector3.zero
-        end
-        skyHideActive = false
-        skyHideReturn = nil
-        local hum = LP.Character and LP.Character:FindFirstChildOfClass("Humanoid")
-        if hum and not Cfg.Move.Fly then hum.PlatformStand = false end
-    end
- 
-    if Cfg.Misc.SkyHide then
-        local pos = root.Position
-        local desiredY = Cfg.Misc.SkyHeight
-        if math.abs(pos.Y - desiredY) > 10 then
-            root.CFrame = CFrame.new(pos.X, desiredY, pos.Z)
-        end
-        root.AssemblyLinearVelocity = Vector3.zero
-        local hum = LP.Character and LP.Character:FindFirstChildOfClass("Humanoid")
-        if hum then hum.PlatformStand = true end
-    end
-end)
- 
-conn(LP.CharacterAdded, function()
-    skyHideActive = false
-    skyHideReturn = nil
-end)
- 
----------------------------------------------------------------- MOVEMENT
-local flying = false
-local spaceWasDown = false
-conn(RunService.RenderStepped, function(dt)
-    local char = LP.Character
-    local hum = char and char:FindFirstChildOfClass("Humanoid")
-    local root = char and char:FindFirstChild("HumanoidRootPart")
-    if not hum or not root then return end
-    local M = Cfg.Move
- 
-    if M.ApplySpeed then
-        -- method 1: standard Humanoid properties (works if the game uses stock movement)
-        if hum.WalkSpeed ~= M.WalkSpeed then hum.WalkSpeed = M.WalkSpeed end
-        pcall(function() hum.UseJumpPower = true end)
-        if hum.JumpPower ~= M.Jump then pcall(function() hum.JumpPower = M.Jump end) end
-        pcall(function() hum.JumpHeight = M.Jump end)
- 
-        -- method 2: direct physics push based on WASD, independent of Humanoid entirely.
-        -- Covers games (common for giant-creature games like this one) that drive movement
-        -- with their own controller and ignore WalkSpeed completely. Only kicks in when
-        -- a movement key is actually held, and only touches horizontal velocity so gravity
-        -- and jump arcs aren't disturbed.
-        if not M.Fly then
-            local cam = Camera.CFrame
-            local dir = Vector3.zero
-            if UIS:IsKeyDown(Enum.KeyCode.W) then dir += cam.LookVector end
-            if UIS:IsKeyDown(Enum.KeyCode.S) then dir -= cam.LookVector end
-            if UIS:IsKeyDown(Enum.KeyCode.A) then dir -= cam.RightVector end
-            if UIS:IsKeyDown(Enum.KeyCode.D) then dir += cam.RightVector end
-            dir = Vector3.new(dir.X, 0, dir.Z)
-            if dir.Magnitude > 0.1 then
-                local v = root.AssemblyLinearVelocity
-                local push = dir.Unit * M.WalkSpeed
-                root.AssemblyLinearVelocity = Vector3.new(push.X, v.Y, push.Z)
-            end
- 
-            -- forced jump: on Space press (not held, so it doesn't fling you endlessly),
-            -- set a strong upward velocity directly rather than relying on JumpPower.
-            if UIS:IsKeyDown(Enum.KeyCode.Space) and not spaceWasDown then
-                local v = root.AssemblyLinearVelocity
-                root.AssemblyLinearVelocity = Vector3.new(v.X, M.Jump, v.Z)
-            end
-        end
-        spaceWasDown = UIS:IsKeyDown(Enum.KeyCode.Space)
-    end
- 
-    if M.Fly then
-        flying = true
-        hum.PlatformStand = true
-        local cam, dir = Camera.CFrame, Vector3.zero
-        if UIS:IsKeyDown(Enum.KeyCode.W) then dir += cam.LookVector end
-        if UIS:IsKeyDown(Enum.KeyCode.S) then dir -= cam.LookVector end
-        if UIS:IsKeyDown(Enum.KeyCode.A) then dir -= cam.RightVector end
-        if UIS:IsKeyDown(Enum.KeyCode.D) then dir += cam.RightVector end
-        if UIS:IsKeyDown(Enum.KeyCode.Space) then dir += Vector3.yAxis end
-        if UIS:IsKeyDown(Enum.KeyCode.LeftControl) then dir -= Vector3.yAxis end
-        if dir.Magnitude > 0 then
-            root.CFrame = root.CFrame + dir.Unit * M.FlySpeed * dt
-        end
-        root.AssemblyLinearVelocity = Vector3.zero
-    elseif flying then
-        flying = false
-        hum.PlatformStand = false
-    end
-end)
- 
-local noclipOriginal = {}
-conn(RunService.Stepped, function()
-    local char = LP.Character
-    if not char then return end
-    if Cfg.Move.Noclip then
-        for _, p in ipairs(char:GetDescendants()) do
-            if p:IsA("BasePart") then
-                if noclipOriginal[p] == nil then noclipOriginal[p] = p.CanCollide end
-                p.CanCollide = false
-            end
-        end
-    elseif next(noclipOriginal) ~= nil then
-        -- noclip was just turned off: restore every part we touched, then forget them
-        for p, wasCollide in pairs(noclipOriginal) do
-            if p and p.Parent then pcall(function() p.CanCollide = wasCollide end) end
-        end
-        noclipOriginal = {}
-    end
-end)
-conn(LP.CharacterAdded, function() noclipOriginal = {} end)
- 
+
 ---------------------------------------------------------------- UI HELPERS
 local C = {
-    bg = Color3.fromRGB(18, 18, 22), bar = Color3.fromRGB(24, 24, 30), side = Color3.fromRGB(22, 22, 28),
-    item = Color3.fromRGB(34, 34, 42), on = Color3.fromRGB(40, 120, 70), accent = Color3.fromRGB(45, 100, 200),
-    text = Color3.fromRGB(225, 225, 238), dim = Color3.fromRGB(160, 160, 180), off = Color3.fromRGB(44, 44, 54),
+    bg = Color3.fromRGB(21, 22, 28),
+    sidebar = Color3.fromRGB(17, 18, 23),
+    card = Color3.fromRGB(26, 27, 34),
+    cardHeader = Color3.fromRGB(30, 31, 39),
+    accent = Color3.fromRGB(168, 85, 235),
+    text = Color3.fromRGB(225, 225, 232),
+    dim = Color3.fromRGB(125, 126, 138),
+    track = Color3.fromRGB(42, 43, 52),
+    sidebarSelected = Color3.fromRGB(37, 29, 48),
 }
- 
 local function new(class, props, parent)
     local o = Instance.new(class)
-    for k, v in pairs(props) do o[k] = v end
+    for k, v in pairs(props) do
+        local okProp = pcall(function() o[k] = v end)
+        if not okProp then print("[BadFight] skipped unsupported property " .. class .. "." .. tostring(k)) end
+    end
     o.Parent = parent
     return o
 end
 local function corner(o, r) new("UICorner", {CornerRadius = UDim.new(0, r or 6)}, o) end
- 
 local guiParent = CoreGui
 pcall(function() if gethui then guiParent = gethui() end end)
-pcall(function() local old = guiParent:FindFirstChild("PinghyuHub") if old then old:Destroy() end end)
- 
-local Gui = new("ScreenGui", {Name = "PinghyuHub", ResetOnSpawn = false, ZIndexBehavior = Enum.ZIndexBehavior.Sibling}, guiParent)
-local Main = new("Frame", {Size = UDim2.new(0, 560, 0, 420), Position = UDim2.new(0.5, -280, 0.5, -210), BackgroundColor3 = C.bg, BorderSizePixel = 0}, Gui)
-corner(Main, 10)
-local TitleBar = new("Frame", {Size = UDim2.new(1, 0, 0, 36), BackgroundColor3 = C.bar, BorderSizePixel = 0}, Main)
-corner(TitleBar, 10)
-new("TextLabel", {Size = UDim2.new(1, -50, 1, 0), Position = UDim2.new(0, 14, 0, 0), BackgroundTransparency = 1, Text = "pinghyu Hub  //  Kaiju Alpha", TextColor3 = C.text, Font = Enum.Font.GothamBold, TextSize = 15, TextXAlignment = Enum.TextXAlignment.Left}, TitleBar)
-local CloseBtn = new("TextButton", {Size = UDim2.new(0, 28, 0, 28), Position = UDim2.new(1, -32, 0, 4), BackgroundColor3 = Color3.fromRGB(140, 35, 35), Text = "X", TextColor3 = Color3.new(1, 1, 1), Font = Enum.Font.GothamBold, TextSize = 13}, TitleBar)
-corner(CloseBtn)
- 
-local Side = new("Frame", {Size = UDim2.new(0, 110, 1, -36), Position = UDim2.new(0, 0, 0, 36), BackgroundColor3 = C.side, BorderSizePixel = 0}, Main)
-new("UIListLayout", {Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder}, Side)
-new("UIPadding", {PaddingTop = UDim.new(0, 10), PaddingLeft = UDim.new(0, 6), PaddingRight = UDim.new(0, 6)}, Side)
-local Content = new("Frame", {Size = UDim2.new(1, -120, 1, -46), Position = UDim2.new(0, 116, 0, 42), BackgroundTransparency = 1}, Main)
- 
--- window drag
-local dragStart, startPos
-conn(TitleBar.InputBegan, function(i)
-    if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then
-        dragStart, startPos = i.Position, Main.Position
+
+---------------------------------------------------------------- CONFIG
+local Cfg = {
+    Combat = {
+        KillAura = false,
+        Range = 24,            -- fires SwordHit at anyone within this distance (max 24)
+        Angle = 360,           -- 360 = hits all around you (also behind). Smaller = only in front cone
+        SwingTime = 0.05,      -- seconds between hits (lower = faster)
+        MultiHit = 1,          -- SwordHit calls per hit (1-5)
+        ThroughWalls = true,   -- ON: hits even with blocks in the way. OFF: needs line of sight
+        FaceTarget = false,
+        Priority = "Nearest",  -- Nearest / LowestHealth
+        SwingOnly = false,     -- only attack while YOU are swinging (left mouse held / just clicked)
+        LimitItem = false,     -- ON: only while holding a sword. OFF: also while holding blocks / nothing
+        NoSwing = false,       -- never plays any swing animation
+        Animation = false,     -- plays a swing animation on your arm each hit (ignored if No Swing is on)
+    },
+    Movement = {
+        SpeedEnabled = false, WalkSpeed = 50,
+        FlyEnabled = false, FlySpeed = 60,
+        FlyGroundTouchInterval = 1.3,
+        FlyGroundTouchDuration = 0.12,
+    },
+}
+local Cfg_ESP = {Enabled = false, MaxDistance = 300, ShowTeammates = true}
+local Cfg_Tags = {Enabled = false, ShowHealth = true, ShowDistance = true}
+local Cfg_Inv = {Enabled = false}
+local Cfg_Breaker = {Enabled = false, SwingRange = 12}
+local Cfg_Spy = {Enabled = false}
+local Cfg_LJ = {Enabled = false, Speed = 70}
+local Cfg_THUD = {Enabled = false}
+local Cfg_List = {Enabled = false, Size = 22}
+local modules = {}
+
+local MINE_INTERVAL = 0.12
+
+---------------------------------------------------------------- BASIC HELPERS
+local function getRoot() local c = LP.Character return c and c:FindFirstChild("HumanoidRootPart") end
+local function getHum() local c = LP.Character return c and c:FindFirstChildOfClass("Humanoid") end
+local function getEquippedTool() local c = LP.Character return c and c:FindFirstChildOfClass("Tool") end
+
+local function kwMatch(list, text)
+    text = string.lower(text)
+    for w in string.gmatch(string.lower(list), "[^,%s]+") do
+        if string.find(text, w, 1, true) then return true end
     end
-end)
-conn(UIS.InputChanged, function(i)
-    if dragStart and (i.UserInputType == Enum.UserInputType.MouseMovement or i.UserInputType == Enum.UserInputType.Touch) then
-        local d = i.Position - dragStart
-        Main.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + d.X, startPos.Y.Scale, startPos.Y.Offset + d.Y)
+    return false
+end
+
+local function isTeammate(plr)
+    return LP.Team ~= nil and plr.Team == LP.Team
+end
+
+local loggedOnce = {}
+local function logOnce(key, msg)
+    if not loggedOnce[key] then
+        loggedOnce[key] = true
+        print("[BadFight] " .. msg)
     end
-end)
-conn(UIS.InputEnded, function(i)
-    if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then dragStart = nil end
-end)
- 
--- tabs / pages
-local pages, tabBtns = {}, {}
-local function showTab(name)
-    for n, p in pairs(pages) do p.Visible = (n == name) end
-    for n, b in pairs(tabBtns) do b.BackgroundColor3 = (n == name) and C.accent or C.item end
 end
-local function addPage(name, order)
-    local b = new("TextButton", {Size = UDim2.new(1, 0, 0, 34), BackgroundColor3 = C.item, Text = name, TextColor3 = Color3.new(1, 1, 1), Font = Enum.Font.GothamMedium, TextSize = 13, LayoutOrder = order}, Side)
-    corner(b, 7)
-    local p = new("ScrollingFrame", {Size = UDim2.new(1, 0, 1, 0), BackgroundTransparency = 1, BorderSizePixel = 0, ScrollBarThickness = 4, AutomaticCanvasSize = Enum.AutomaticSize.Y, CanvasSize = UDim2.new(), Visible = false}, Content)
-    new("UIListLayout", {Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder}, p)
-    new("UIPadding", {PaddingLeft = UDim.new(0, 2), PaddingRight = UDim.new(0, 8), PaddingTop = UDim.new(0, 2), PaddingBottom = UDim.new(0, 8)}, p)
-    tabBtns[name], pages[name] = b, p
-    b.MouseButton1Click:Connect(function() showTab(name) end)
-    return p
-end
- 
--- controls (all read/write Cfg via path so refreshAll keeps them in sync)
-local refreshers = {}
-local function refreshAll() for _, f in ipairs(refreshers) do f() end end
-local function ref(path)
-    local t = Cfg
-    for i = 1, #path - 1 do t = t[path[i]] end
-    return t, path[#path]
-end
- 
-local function header(page, text)
-    new("TextLabel", {Size = UDim2.new(1, 0, 0, 20), BackgroundTransparency = 1, Text = text, TextColor3 = C.dim, Font = Enum.Font.GothamBold, TextSize = 12, TextXAlignment = Enum.TextXAlignment.Left}, page)
-end
- 
-local function toggle(page, text, path, cb)
-    local btn = new("TextButton", {Size = UDim2.new(1, 0, 0, 28), BackgroundColor3 = C.off, TextColor3 = Color3.new(1, 1, 1), Font = Enum.Font.Gotham, TextSize = 12}, page)
-    corner(btn)
-    local function refresh()
-        local t, k = ref(path)
-        btn.Text = text .. "   " .. (t[k] and "ON" or "OFF")
-        btn.BackgroundColor3 = t[k] and C.on or C.off
+
+---------------------------------------------------------------- HELD ITEM TRACKING + REMOTES
+-- Found with Remote Spy: this game has no Tool objects. Items are equipped with
+-- ItemsRemotes.EquipTool("Item Name"), swords hit with ItemsRemotes.SwordHit(targetModel, "Sword Name"),
+-- and blocks/beds are mined with ItemsRemotes.MineBlock(...). So we call those remotes directly.
+local SWORD_WORDS = "sword,blade,knife,katana,dagger"
+local itemKnown, currentItem, lastSword, lastPickaxe = false, nil, nil, nil
+local lastMouseDown = 0
+
+local function trackEquip(name)
+    itemKnown = true
+    if type(name) == "string" then
+        currentItem = name
+        if kwMatch(SWORD_WORDS, name) then lastSword = name end
+        if string.find(string.lower(name), "pickaxe", 1, true) then lastPickaxe = name end
+    else
+        currentItem = nil
     end
-    btn.MouseButton1Click:Connect(function()
-        local t, k = ref(path)
-        t[k] = not t[k]
-        refresh()
-        if cb then cb(t[k]) end
+end
+
+local remoteCache = {}
+local function getItemRemote(name)
+    local r = remoteCache[name]
+    if r and r.Parent then return r end
+    local remotes = game:GetService("ReplicatedStorage"):FindFirstChild("Remotes")
+    local items = remotes and remotes:FindFirstChild("ItemsRemotes")
+    r = items and items:FindFirstChild(name)
+    remoteCache[name] = r
+    return r
+end
+
+local function genv(key)
+    local ok, v = pcall(function() return getgenv and getgenv()[key] end)
+    return ok and v or nil
+end
+-- if it guesses the wrong item name, set it yourself:  getgenv().BadFightSword = "Iron Sword"
+local function swordName() return genv("BadFightSword") or lastSword or "Wooden Sword" end
+local function pickaxeName() return genv("BadFightPickaxe") or lastPickaxe or "Wooden Pickaxe" end
+
+local function recentlySwinging()
+    return UIS:IsMouseButtonPressed(Enum.UserInputType.MouseButton1) or (os.clock() - lastMouseDown) < 0.4
+end
+
+---------------------------------------------------------------- KILL AURA
+local lastTargetPlr, lastTargetAt = nil, 0
+
+local function targetModel(plr)
+    local container = workspace:FindFirstChild("PlayersContainer")
+    return (container and container:FindFirstChild(plr.Name)) or plr.Character
+end
+
+local function nearestEnemy(root, maxDist)
+    local best, bestD = nil, maxDist or math.huge
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr ~= LP and not isTeammate(plr) and plr.Character then
+            local hum = plr.Character:FindFirstChildOfClass("Humanoid")
+            local hroot = plr.Character:FindFirstChild("HumanoidRootPart")
+            if hum and hroot and hum.Health > 0 then
+                local d = (hroot.Position - root.Position).Magnitude
+                if d < bestD then bestD, best = d, {plr = plr, hum = hum, root = hroot} end
+            end
+        end
+    end
+    return best
+end
+
+-- Angle: 360 means all around you (including behind). Smaller values only allow a cone in front.
+local function withinAngle(root, pos)
+    local a = Cfg.Combat.Angle
+    if a >= 360 then return true end
+    local look = Vector3.new(root.CFrame.LookVector.X, 0, root.CFrame.LookVector.Z)
+    local to = Vector3.new(pos.X - root.Position.X, 0, pos.Z - root.Position.Z)
+    if look.Magnitude < 0.01 or to.Magnitude < 0.01 then return true end
+    local ang = math.deg(math.acos(math.clamp(look.Unit:Dot(to.Unit), -1, 1)))
+    return ang <= a / 2
+end
+
+local losParams = RaycastParams.new()
+losParams.FilterType = Enum.RaycastFilterType.Exclude
+local function hasLineOfSight(root, targetChar, targetPos)
+    local ignore = {LP.Character}
+    if targetChar then ignore[#ignore + 1] = targetChar end
+    losParams.FilterDescendantsInstances = ignore
+    return workspace:Raycast(root.Position, targetPos - root.Position, losParams) == nil
+end
+
+local function pickTarget(root)
+    local C2 = Cfg.Combat
+    local best, bestScore = nil, math.huge
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr ~= LP and not isTeammate(plr) and plr.Character then
+            local hum = plr.Character:FindFirstChildOfClass("Humanoid")
+            local hroot = plr.Character:FindFirstChild("HumanoidRootPart")
+            if hum and hroot and hum.Health > 0 then
+                local d = (hroot.Position - root.Position).Magnitude
+                if d <= C2.Range and withinAngle(root, hroot.Position)
+                    and (C2.ThroughWalls or hasLineOfSight(root, plr.Character, hroot.Position)) then
+                    local score = C2.Priority == "LowestHealth" and hum.Health or d
+                    if score < bestScore then
+                        bestScore, best = score, {plr = plr, hum = hum, root = hroot, model = targetModel(plr)}
+                    end
+                end
+            end
+        end
+    end
+    return best
+end
+
+-- Optional swing animation: tweens your right shoulder joint forward and back. Purely visual and
+-- best-effort (rig/game dependent). The hit itself is the SwordHit remote and never needs it.
+local swingBusy = false
+local function playSwingAnimation()
+    if swingBusy then return end
+    local char = LP.Character
+    if not char then return end
+    local motor = char:FindFirstChild("Right Shoulder", true) or char:FindFirstChild("RightShoulder", true)
+    if not motor or not motor:IsA("Motor6D") then return end
+    swingBusy = true
+    task.spawn(function()
+        local orig = motor.C0
+        local isR6 = motor.Parent ~= nil and motor.Parent.Name == "Torso"
+        local rot = isR6 and CFrame.Angles(0, 0, math.rad(105)) or CFrame.Angles(math.rad(105), 0, 0)
+        pcall(function()
+            local down = TweenService:Create(motor, TweenInfo.new(0.06, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {C0 = orig * rot})
+            down:Play()
+            down.Completed:Wait()
+            local up = TweenService:Create(motor, TweenInfo.new(0.08, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {C0 = orig})
+            up:Play()
+            up.Completed:Wait()
+        end)
+        pcall(function() motor.C0 = orig end)
+        swingBusy = false
     end)
-    refreshers[#refreshers + 1] = refresh
-    refresh()
 end
- 
-local function slider(page, text, path, min, max, step)
-    local f = new("Frame", {Size = UDim2.new(1, 0, 0, 44), BackgroundTransparency = 1}, page)
-    local lbl = new("TextLabel", {Size = UDim2.new(1, -70, 0, 18), BackgroundTransparency = 1, TextColor3 = C.text, Font = Enum.Font.Gotham, TextSize = 12, TextXAlignment = Enum.TextXAlignment.Left}, f)
-    local box = new("TextBox", {Size = UDim2.new(0, 64, 0, 18), Position = UDim2.new(1, -64, 0, 0), BackgroundColor3 = C.item, TextColor3 = C.text, Font = Enum.Font.Gotham, TextSize = 12, ClearTextOnFocus = false}, f)
-    corner(box, 4)
-    local bar = new("Frame", {Size = UDim2.new(1, 0, 0, 8), Position = UDim2.new(0, 0, 0, 28), BackgroundColor3 = C.item}, f)
-    corner(bar, 4)
-    local fill = new("Frame", {Size = UDim2.new(0, 0, 1, 0), BackgroundColor3 = C.accent}, bar)
-    corner(fill, 4)
- 
-    local function refresh()
-        local t, k = ref(path)
-        lbl.Text = text
-        box.Text = tostring(t[k])
-        fill.Size = UDim2.new(math.clamp((t[k] - min) / (max - min), 0, 1), 0, 1, 0)
+
+local lastSwing = 0
+conn(RunService.Heartbeat, function()
+    local C2 = Cfg.Combat
+    if not C2.KillAura then return end
+    local root = getRoot()
+    if not root then return end
+
+    local now = os.clock()
+    if now - lastSwing < C2.SwingTime then return end
+    if C2.SwingOnly and not recentlySwinging() then return end
+    if C2.LimitItem and itemKnown and not (currentItem and kwMatch(SWORD_WORDS, currentItem)) then return end
+
+    local target = pickTarget(root)
+    if not target or not target.model then return end
+
+    local remote = getItemRemote("SwordHit")
+    if not remote then
+        logOnce("nosword", "ReplicatedStorage.Remotes.ItemsRemotes.SwordHit was not found.")
+        return
     end
+
+    lastSwing = now
+    lastTargetPlr, lastTargetAt = target.plr, now
+    if C2.FaceTarget then
+        local t = target.root.Position
+        root.CFrame = CFrame.new(root.Position, Vector3.new(t.X, root.Position.Y, t.Z))
+    end
+    local sword = swordName()
+    for _ = 1, C2.MultiHit do
+        pcall(function() remote:FireServer(target.model, sword) end)
+    end
+    if C2.Animation and not C2.NoSwing then playSwingAnimation() end
+    logOnce("hit", "SwordHit -> " .. target.model.Name .. " with " .. sword)
+end)
+
+---------------------------------------------------------------- SPEED
+-- Reasserts WalkSpeed the instant the game changes it, remembers the speed you had before, and
+-- puts that exact value back when you turn it off.
+local wasSpeedOn, origWalkSpeed = false, nil
+local speedHum, speedConn = nil, nil
+conn(RunService.Heartbeat, function()
+    local hum = getHum()
+    if not hum then return end
+    if speedHum ~= hum then
+        speedHum = hum
+        if speedConn then speedConn:Disconnect() end
+        speedConn = hum:GetPropertyChangedSignal("WalkSpeed"):Connect(function()
+            if alive and Cfg.Movement.SpeedEnabled and hum.WalkSpeed ~= Cfg.Movement.WalkSpeed then
+                hum.WalkSpeed = Cfg.Movement.WalkSpeed
+            end
+        end)
+        conns[#conns + 1] = speedConn
+        wasSpeedOn = false
+    end
+    if Cfg.Movement.SpeedEnabled then
+        if not wasSpeedOn then
+            origWalkSpeed = hum.WalkSpeed
+            wasSpeedOn = true
+        end
+        if hum.WalkSpeed ~= Cfg.Movement.WalkSpeed then hum.WalkSpeed = Cfg.Movement.WalkSpeed end
+    elseif wasSpeedOn then
+        wasSpeedOn = false
+        hum.WalkSpeed = origWalkSpeed or 16
+    end
+end)
+
+---------------------------------------------------------------- HUD (fly stand bar, module list, target HUD)
+local HUD = new("ScreenGui", {Name = "BadFightHUD", IgnoreGuiInset = true, ResetOnSpawn = false, DisplayOrder = 6}, guiParent)
+
+local flyHud = new("Frame", {Size = UDim2.new(0, 230, 0, 38), Position = UDim2.new(0.5, -115, 1, -130), BackgroundColor3 = C.bg, Visible = false, BorderSizePixel = 0}, HUD)
+corner(flyHud, 8)
+new("UIStroke", {Color = Color3.fromRGB(44, 45, 54), Thickness = 1}, flyHud)
+local flyHudText = new("TextLabel", {Size = UDim2.new(1, -16, 0, 18), Position = UDim2.new(0, 8, 0, 4), BackgroundTransparency = 1, Text = "FLY", TextColor3 = C.text, Font = Enum.Font.GothamBold, TextSize = 12, TextXAlignment = Enum.TextXAlignment.Left}, flyHud)
+local flyHudTrack = new("Frame", {Size = UDim2.new(1, -16, 0, 6), Position = UDim2.new(0, 8, 1, -12), BackgroundColor3 = C.track, BorderSizePixel = 0}, flyHud)
+corner(flyHudTrack, 3)
+local flyHudFill = new("Frame", {Size = UDim2.new(0, 0, 1, 0), BackgroundColor3 = C.accent, BorderSizePixel = 0}, flyHudTrack)
+corner(flyHudFill, 3)
+
+-- MODULE LIST: "VAPE V4" at the top right, enabled modules listed under it, longest name first
+local listFrame = new("Frame", {Size = UDim2.new(0, 320, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -16, 0, 44), BackgroundTransparency = 1, Visible = false}, HUD)
+new("UIListLayout", {HorizontalAlignment = Enum.HorizontalAlignment.Right, SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 2)}, listFrame)
+local listTitle = new("TextLabel", {Size = UDim2.new(1, 0, 0, 44), BackgroundTransparency = 1, RichText = true, Text = 'VAPE <font color="rgb(168,85,235)">V4</font>', TextColor3 = Color3.new(1, 1, 1), Font = Enum.Font.GothamBlack, TextSize = 32, TextXAlignment = Enum.TextXAlignment.Right, LayoutOrder = -1000000}, listFrame)
+local listLabels = {}
+local function listLabelFor(name)
+    local l = listLabels[name]
+    if l then return l end
+    l = new("TextLabel", {Size = UDim2.new(0, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.XY, BackgroundColor3 = Color3.new(0, 0, 0), BackgroundTransparency = 0.45, BorderSizePixel = 0, Font = Enum.Font.GothamMedium, Text = name, TextColor3 = C.accent, TextSize = Cfg_List.Size, Visible = false}, listFrame)
+    new("UIPadding", {PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 8), PaddingTop = UDim.new(0, 2), PaddingBottom = UDim.new(0, 2)}, l)
+    listLabels[name] = l
+    return l
+end
+local listAccum = 0
+conn(RunService.Heartbeat, function(dt)
+    listAccum += dt
+    if listAccum < 0.1 then return end
+    listAccum = 0
+    listFrame.Visible = Cfg_List.Enabled
+    if not Cfg_List.Enabled then return end
+    listTitle.TextSize = Cfg_List.Size + 10
+    for name, e in pairs(modules) do
+        if name ~= "Module List" then
+            local on = e.cfgTable[e.key] == true
+            local l = listLabels[name]
+            if on then
+                l = listLabelFor(name)
+                l.Visible = true
+                l.TextSize = Cfg_List.Size
+                local w = TextService:GetTextSize(name, Cfg_List.Size, Enum.Font.GothamMedium, Vector2.new(1000, 100)).X
+                l.LayoutOrder = -math.floor(w)
+            elseif l then
+                l.Visible = false
+            end
+        end
+    end
+end)
+
+-- TARGET HUD: avatar, name and a health bar for whoever Kill Aura is hitting
+local thud = new("Frame", {Size = UDim2.new(0, 240, 0, 74), AnchorPoint = Vector2.new(0, 0.5), Position = UDim2.new(0.5, 60, 0.5, 70), BackgroundColor3 = C.bg, BackgroundTransparency = 0.1, BorderSizePixel = 0, Visible = false}, HUD)
+corner(thud, 10)
+new("UIStroke", {Color = Color3.fromRGB(44, 45, 54), Thickness = 1}, thud)
+local thudAvatar = new("ImageLabel", {Size = UDim2.new(0, 54, 0, 54), Position = UDim2.new(0, 10, 0, 10), BackgroundColor3 = C.track, BorderSizePixel = 0, Image = ""}, thud)
+corner(thudAvatar, 10)
+local thudName = new("TextLabel", {Size = UDim2.new(1, -80, 0, 18), Position = UDim2.new(0, 72, 0, 10), BackgroundTransparency = 1, Text = "", TextColor3 = C.text, Font = Enum.Font.GothamBold, TextSize = 14, TextXAlignment = Enum.TextXAlignment.Left}, thud)
+local thudHp = new("TextLabel", {Size = UDim2.new(1, -80, 0, 14), Position = UDim2.new(0, 72, 0, 30), BackgroundTransparency = 1, Text = "", TextColor3 = C.dim, Font = Enum.Font.Gotham, TextSize = 12, TextXAlignment = Enum.TextXAlignment.Left}, thud)
+local thudTrack = new("Frame", {Size = UDim2.new(1, -82, 0, 8), Position = UDim2.new(0, 72, 0, 52), BackgroundColor3 = C.track, BorderSizePixel = 0}, thud)
+corner(thudTrack, 4)
+local thudFill = new("Frame", {Size = UDim2.new(1, 0, 1, 0), BackgroundColor3 = Color3.fromRGB(80, 220, 120), BorderSizePixel = 0}, thudTrack)
+corner(thudFill, 4)
+
+local avatarCache = {}
+local function loadAvatar(userId)
+    if avatarCache[userId] ~= nil then return end
+    avatarCache[userId] = false
+    task.spawn(function()
+        local ok, content = pcall(function()
+            return Players:GetUserThumbnailAsync(userId, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size100x100)
+        end)
+        if ok and content then avatarCache[userId] = content end
+    end)
+end
+
+local thudShown = 1
+conn(RunService.RenderStepped, function()
+    local plr = lastTargetPlr
+    local char = plr and plr.Character
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    if not Cfg_THUD.Enabled or not plr or not hum or hum.Health <= 0 or os.clock() - lastTargetAt > 1.2 then
+        thud.Visible = false
+        return
+    end
+    thud.Visible = true
+    thudName.Text = plr.DisplayName ~= "" and plr.DisplayName or plr.Name
+    local frac = math.clamp(hum.Health / math.max(hum.MaxHealth, 1), 0, 1)
+    thudShown += (frac - thudShown) * 0.25
+    thudFill.Size = UDim2.new(thudShown, 0, 1, 0)
+    thudFill.BackgroundColor3 = Color3.fromRGB(235, 70, 70):Lerp(Color3.fromRGB(80, 220, 120), thudShown)
+    thudHp.Text = ("%d / %d"):format(math.floor(hum.Health + 0.5), math.floor(hum.MaxHealth + 0.5))
+    local img = avatarCache[plr.UserId]
+    if img == nil then
+        loadAvatar(plr.UserId)
+        thudAvatar.Image = ""
+    elseif img == false then
+        thudAvatar.Image = ""
+    elseif thudAvatar.Image ~= img then
+        thudAvatar.Image = img
+    end
+end)
+
+---------------------------------------------------------------- FLY
+-- Direction: WASD along where the camera faces on the flat plane (looking up does NOT make you
+-- climb), Space = up, LeftControl = down. Every FlyGroundTouchInterval seconds it drops to the
+-- ground for a moment and then goes right back UP to the altitude it was at. If nothing solid is
+-- below (void/gap) it skips that drop instead of letting you fall.
+local flyPhase, flyTimer, flySavedY, flyTouchEnd = "fly", 0, 0, 0
+local flyRay = RaycastParams.new()
+flyRay.FilterType = Enum.RaycastFilterType.Exclude
+
+conn(RunService.RenderStepped, function(dt)
+    local M = Cfg.Movement
+    local hum, root = getHum(), getRoot()
+    if not M.FlyEnabled or not hum or not root then
+        flyHud.Visible = false
+        flyPhase, flyTimer = "fly", 0
+        return
+    end
+    flyHud.Visible = true
+    local cam = workspace.CurrentCamera
+    flyRay.FilterDescendantsInstances = {LP.Character}
+
+    if flyPhase == "touch" then
+        root.AssemblyLinearVelocity = Vector3.zero
+        flyHudText.Text = "FLY  touching ground..."
+        flyHudFill.Size = UDim2.new(1, 0, 1, 0)
+        if os.clock() >= flyTouchEnd then
+            local p = root.Position
+            local rot = root.CFrame - root.CFrame.Position
+            root.CFrame = CFrame.new(Vector3.new(p.X, flySavedY, p.Z)) * rot
+            root.AssemblyLinearVelocity = Vector3.zero
+            flyPhase, flyTimer = "fly", 0
+        end
+        return
+    end
+
+    flyTimer += dt
+    local remaining = math.max(M.FlyGroundTouchInterval - flyTimer, 0)
+    flyHudText.Text = ("FLY  ground touch in %.1fs"):format(remaining)
+    flyHudFill.Size = UDim2.new(math.clamp(flyTimer / M.FlyGroundTouchInterval, 0, 1), 0, 1, 0)
+
+    local look = Vector3.new(cam.CFrame.LookVector.X, 0, cam.CFrame.LookVector.Z)
+    local right = Vector3.new(cam.CFrame.RightVector.X, 0, cam.CFrame.RightVector.Z)
+    if look.Magnitude > 0 then look = look.Unit end
+    if right.Magnitude > 0 then right = right.Unit end
+    local dir = Vector3.zero
+    if UIS:IsKeyDown(Enum.KeyCode.W) then dir += look end
+    if UIS:IsKeyDown(Enum.KeyCode.S) then dir -= look end
+    if UIS:IsKeyDown(Enum.KeyCode.A) then dir -= right end
+    if UIS:IsKeyDown(Enum.KeyCode.D) then dir += right end
+    if UIS:IsKeyDown(Enum.KeyCode.Space) then dir += Vector3.yAxis end
+    if UIS:IsKeyDown(Enum.KeyCode.LeftControl) then dir -= Vector3.yAxis end
+    if dir.Magnitude > 0 then
+        root.CFrame = root.CFrame + dir.Unit * M.FlySpeed * dt
+    end
+    root.AssemblyLinearVelocity = Vector3.zero
+
+    if flyTimer >= M.FlyGroundTouchInterval then
+        local result = workspace:Raycast(root.Position, Vector3.new(0, -500, 0), flyRay)
+        if result then
+            flySavedY = root.Position.Y
+            local rot = root.CFrame - root.CFrame.Position
+            root.CFrame = CFrame.new(result.Position + Vector3.new(0, 3, 0)) * rot
+            flyPhase = "touch"
+            flyTouchEnd = os.clock() + M.FlyGroundTouchDuration
+        else
+            flyTimer = 0
+        end
+    end
+end)
+
+---------------------------------------------------------------- LONG JUMP
+-- Switch it on (or press its keybind) and you launch in an arc that lands on the nearest enemy,
+-- or straight ahead if nobody is around, then it turns itself back off.
+local ljState = nil
+local function finishLongJump()
+    ljState = nil
+    Cfg_LJ.Enabled = false
+    local e = modules["Long Jump"]
+    if e and e.refresh then e.refresh() end
+end
+
+conn(RunService.Heartbeat, function(dt)
+    local root = getRoot()
+    if Cfg_LJ.Enabled and not ljState then
+        if not root then
+            finishLongJump()
+            return
+        end
+        local target = nearestEnemy(root, 400)
+        local dest
+        if target then
+            dest = target.root.Position
+        else
+            local look = workspace.CurrentCamera.CFrame.LookVector
+            local flat = Vector3.new(look.X, 0, look.Z)
+            dest = root.Position + (flat.Magnitude > 0 and flat.Unit or Vector3.zAxis) * 60
+        end
+        local g = workspace.Gravity
+        local delta = dest - root.Position
+        local horiz = Vector3.new(delta.X, 0, delta.Z)
+        local hd = horiz.Magnitude
+        local T = math.clamp(hd / math.max(Cfg_LJ.Speed, 1), 0.45, 2.2)
+        local vy = (delta.Y + 0.5 * g * T * T) / T
+        local vh = hd > 0.1 and horiz.Unit * (hd / T) or Vector3.zero
+        ljState = {vh = vh, t = 0, T = T}
+        root.AssemblyLinearVelocity = Vector3.new(vh.X, vy, vh.Z)
+    elseif ljState then
+        ljState.t += dt
+        if not root or ljState.t >= ljState.T then
+            finishLongJump()
+        else
+            local v = root.AssemblyLinearVelocity
+            root.AssemblyLinearVelocity = Vector3.new(ljState.vh.X, v.Y, ljState.vh.Z)
+        end
+    end
+end)
+
+---------------------------------------------------------------- ESP / NAMETAGS / INVENTORY ESP
+-- NOTE on the old ESP: boxes were invisible because a Frame with BackgroundTransparency = 1 does
+-- not draw its border at all. Boxes now use a UIStroke, which draws regardless.
+local ESPGui = new("ScreenGui", {Name = "BadFightESP", IgnoreGuiInset = true, ResetOnSpawn = false, DisplayOrder = 5}, guiParent)
+local espEntries = {}
+
+local function espColorFor(plr)
+    if isTeammate(plr) then return Color3.fromRGB(90, 200, 255) end
+    return Color3.fromRGB(235, 70, 70)
+end
+
+-- inventory data: only what the game actually exposes to your client
+local function inventoryItems(plr)
+    local counts, order = {}, {}
+    local function add(name, n)
+        if n <= 0 then return end
+        if not counts[name] then counts[name] = 0; order[#order + 1] = name end
+        counts[name] += n
+    end
+    local char = plr.Character
+    if char then
+        for _, c in ipairs(char:GetChildren()) do
+            if c:IsA("Tool") or kwMatch("sword,pickaxe,shears,wool", c.Name) then add(c.Name, 1) end
+        end
+    end
+    local bp = plr:FindFirstChild("Backpack")
+    if bp then
+        for _, c in ipairs(bp:GetChildren()) do
+            if c:IsA("Tool") then add(c.Name, 1) end
+        end
+    end
+    local holders = {}
+    local function push(v) if v then holders[#holders + 1] = v end end
+    push(plr)
+    push(char)
+    local rs = game:GetService("ReplicatedStorage")
+    push(rs:FindFirstChild(plr.Name))
+    for _, dataRoot in ipairs({"PlayerData", "Inventories", "Inventory", "Data"}) do
+        local d = rs:FindFirstChild(dataRoot)
+        if d then push(d:FindFirstChild(plr.Name)) end
+    end
+    for _, holder in ipairs(holders) do
+        for _, c in ipairs(holder:GetChildren()) do
+            if (c:IsA("Folder") or c:IsA("Configuration")) and kwMatch("inv,item,hotbar,backpack,tools", c.Name) then
+                for _, v in ipairs(c:GetChildren()) do
+                    if v:IsA("IntValue") or v:IsA("NumberValue") then
+                        add(v.Name, math.floor(v.Value))
+                    else
+                        add(v.Name, 1)
+                    end
+                end
+            end
+        end
+    end
+    local out = {}
+    for _, n in ipairs(order) do out[#out + 1] = {name = n, count = counts[n]} end
+    return out
+end
+
+-- item icons: looks for the picture the game itself uses (hotbar / shop images next to the item
+-- name, or an Image/Icon value on the item definition). If none is found it shows a coloured
+-- square with the item initials instead. PrintItemIcons() in the console shows what it found.
+local ICON_KEYS = {image = true, icon = true, thumbnail = true, imageid = true, textureid = true, assetid = true, decal = true}
+local iconCache = {}
+
+local function looksLikeImage(v)
+    return type(v) == "string" and (string.find(v, "rbxassetid", 1, true) or string.find(v, "rbxasset://", 1, true) or string.find(v, "http", 1, true) or string.match(v, "^%d+$")) ~= nil
+end
+local function normalizeImage(v)
+    if string.match(v, "^%d+$") then return "rbxassetid://" .. v end
+    return v
+end
+local function iconFromInstance(inst)
+    if inst:IsA("Tool") and inst.TextureId ~= "" then return inst.TextureId end
+    if (inst:IsA("ImageLabel") or inst:IsA("ImageButton")) and inst.Image ~= "" then return inst.Image end
+    for k, v in pairs(inst:GetAttributes()) do
+        if ICON_KEYS[string.lower(k)] and looksLikeImage(v) then return normalizeImage(v) end
+    end
+    for _, c in ipairs(inst:GetChildren()) do
+        if ICON_KEYS[string.lower(c.Name)] then
+            if c:IsA("StringValue") and looksLikeImage(c.Value) then return normalizeImage(c.Value) end
+            if c:IsA("IntValue") or c:IsA("NumberValue") then return "rbxassetid://" .. tostring(math.floor(c.Value)) end
+            if (c:IsA("ImageLabel") or c:IsA("ImageButton")) and c.Image ~= "" then return c.Image end
+            if c:IsA("Decal") or c:IsA("Texture") then return c.Texture end
+        end
+    end
+    return nil
+end
+local function searchIcon(name)
+    local lname = string.lower(name)
+    local pg = LP:FindFirstChild("PlayerGui")
+    if pg then
+        for _, o in ipairs(pg:GetDescendants()) do
+            if (o:IsA("ImageLabel") or o:IsA("ImageButton")) and o.Image ~= "" then
+                local par = o.Parent
+                if string.lower(o.Name) == lname or (par and string.lower(par.Name) == lname) then return o.Image end
+            end
+        end
+    end
+    local n = 0
+    for _, o in ipairs(game:GetService("ReplicatedStorage"):GetDescendants()) do
+        n += 1
+        if n > 20000 then break end
+        if string.lower(o.Name) == lname then
+            local img = iconFromInstance(o)
+            if img then return img end
+        end
+    end
+    return nil
+end
+local function getIcon(name)
+    local cached = iconCache[name]
+    if cached ~= nil then return cached or nil end
+    iconCache[name] = false
+    task.spawn(function()
+        local ok, img = pcall(searchIcon, name)
+        if ok and img then iconCache[name] = img end
+    end)
+    return nil
+end
+
+local function slotColor(name)
+    local h = 0
+    for k = 1, #name do h = (h * 31 + string.byte(name, k)) % 360 end
+    return Color3.fromHSV(h / 360, 0.55, 0.8)
+end
+local function initials(name)
+    local out = {}
+    for word in string.gmatch(name, "%S+") do out[#out + 1] = string.upper(string.sub(word, 1, 1)) end
+    return string.sub(table.concat(out), 1, 2)
+end
+
+local function entryFor(plr)
+    local e = espEntries[plr]
+    if e then return e end
+    local box = new("Frame", {BackgroundTransparency = 1, BorderSizePixel = 0, Visible = false}, ESPGui)
+    local stroke = new("UIStroke", {Thickness = 2, Color = Color3.fromRGB(235, 70, 70), ApplyStrokeMode = Enum.ApplyStrokeMode.Border}, box)
+    local tag = new("TextLabel", {BackgroundTransparency = 1, TextColor3 = Color3.new(1, 1, 1), Font = Enum.Font.GothamBold, TextSize = 13, TextStrokeTransparency = 0.3, Size = UDim2.new(0, 240, 0, 16), Visible = false}, ESPGui)
+    local invFrame = new("Frame", {BackgroundTransparency = 1, Size = UDim2.new(0, 0, 0, 24), AutomaticSize = Enum.AutomaticSize.X, AnchorPoint = Vector2.new(0.5, 0), Visible = false}, ESPGui)
+    new("UIListLayout", {FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 4), SortOrder = Enum.SortOrder.LayoutOrder, VerticalAlignment = Enum.VerticalAlignment.Center}, invFrame)
+    e = {box = box, stroke = stroke, tag = tag, invFrame = invFrame, invKey = "", invAt = 0, items = {}}
+    espEntries[plr] = e
+    return e
+end
+local function dropEntry(plr)
+    local e = espEntries[plr]
+    if e then
+        pcall(function() e.box:Destroy() e.tag:Destroy() e.invFrame:Destroy() end)
+        espEntries[plr] = nil
+    end
+end
+
+local function renderInventory(e, items)
+    local parts, icons = {}, {}
+    for _, it in ipairs(items) do
+        parts[#parts + 1] = it.name .. ":" .. it.count
+        icons[#icons + 1] = iconCache[it.name] and "1" or "0"
+    end
+    local key = table.concat(parts, "|") .. "#" .. table.concat(icons)
+    if key == e.invKey then return end
+    e.invKey = key
+    for _, c in ipairs(e.invFrame:GetChildren()) do
+        if c:IsA("Frame") then c:Destroy() end
+    end
+    for i, it in ipairs(items) do
+        if i > 8 then break end
+        local slot = new("Frame", {Size = UDim2.new(0, 0, 0, 24), AutomaticSize = Enum.AutomaticSize.X, BackgroundColor3 = Color3.new(0, 0, 0), BackgroundTransparency = 0.45, BorderSizePixel = 0, LayoutOrder = i}, e.invFrame)
+        corner(slot, 5)
+        new("UIListLayout", {FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 3), SortOrder = Enum.SortOrder.LayoutOrder, VerticalAlignment = Enum.VerticalAlignment.Center}, slot)
+        new("UIPadding", {PaddingLeft = UDim.new(0, 3), PaddingRight = UDim.new(0, 4)}, slot)
+        local img = getIcon(it.name)
+        if img then
+            new("ImageLabel", {Size = UDim2.new(0, 20, 0, 20), BackgroundTransparency = 1, Image = img, LayoutOrder = 1}, slot)
+        else
+            local ph = new("TextLabel", {Size = UDim2.new(0, 20, 0, 20), BackgroundColor3 = slotColor(it.name), Text = initials(it.name), TextColor3 = Color3.new(1, 1, 1), Font = Enum.Font.GothamBold, TextSize = 9, LayoutOrder = 1}, slot)
+            corner(ph, 4)
+        end
+        if it.count > 1 then
+            new("TextLabel", {Size = UDim2.new(0, 0, 0, 20), AutomaticSize = Enum.AutomaticSize.X, BackgroundTransparency = 1, Text = "x" .. it.count, TextColor3 = Color3.new(1, 1, 1), Font = Enum.Font.GothamBold, TextSize = 12, LayoutOrder = 2}, slot)
+        end
+    end
+end
+
+conn(RunService.RenderStepped, function()
+    if not (Cfg_ESP.Enabled or Cfg_Tags.Enabled or Cfg_Inv.Enabled) then
+        for plr in pairs(espEntries) do dropEntry(plr) end
+        return
+    end
+    local cam = workspace.CurrentCamera
+    local seen = {}
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr ~= LP and plr.Character and (Cfg_ESP.ShowTeammates or not isTeammate(plr)) then
+            local hum = plr.Character:FindFirstChildOfClass("Humanoid")
+            local hroot = plr.Character:FindFirstChild("HumanoidRootPart")
+            if hum and hroot and hum.Health > 0 then
+                local dist = (hroot.Position - cam.CFrame.Position).Magnitude
+                if dist <= Cfg_ESP.MaxDistance then
+                    seen[plr] = true
+                    local e = entryFor(plr)
+                    local pos, onScreen = cam:WorldToViewportPoint(hroot.Position)
+                    if onScreen and pos.Z > 0 then
+                        local top = cam:WorldToViewportPoint(hroot.Position + Vector3.new(0, 3, 0))
+                        local bot = cam:WorldToViewportPoint(hroot.Position - Vector3.new(0, 3.2, 0))
+                        local h = math.abs(top.Y - bot.Y)
+                        local w = h * 0.55
+
+                        e.box.Visible = Cfg_ESP.Enabled
+                        if Cfg_ESP.Enabled then
+                            e.stroke.Color = espColorFor(plr)
+                            e.box.Size = UDim2.new(0, w, 0, h)
+                            e.box.Position = UDim2.new(0, pos.X - w / 2, 0, top.Y)
+                        end
+
+                        e.tag.Visible = Cfg_Tags.Enabled
+                        if Cfg_Tags.Enabled then
+                            local text = plr.DisplayName ~= "" and plr.DisplayName or plr.Name
+                            if Cfg_Tags.ShowHealth then text = text .. " [" .. math.floor(hum.Health) .. "hp]" end
+                            if Cfg_Tags.ShowDistance then text = text .. " " .. math.floor(dist) .. "m" end
+                            e.tag.Text = text
+                            e.tag.TextColor3 = espColorFor(plr)
+                            e.tag.Position = UDim2.new(0, pos.X - 120, 0, top.Y - 18)
+                        end
+
+                        e.invFrame.Visible = Cfg_Inv.Enabled
+                        if Cfg_Inv.Enabled then
+                            if os.clock() - e.invAt > 0.5 then
+                                e.invAt = os.clock()
+                                e.items = inventoryItems(plr)
+                            end
+                            renderInventory(e, e.items)
+                            e.invFrame.Position = UDim2.new(0, pos.X, 0, bot.Y + 4)
+                        end
+                    else
+                        e.box.Visible, e.tag.Visible, e.invFrame.Visible = false, false, false
+                    end
+                end
+            end
+        end
+    end
+    for plr in pairs(espEntries) do
+        if not seen[plr] then dropEntry(plr) end
+    end
+end)
+
+pcall(function()
+    if getgenv then
+        getgenv().PrintInventoryInfo = function(name)
+            for _, plr in ipairs(Players:GetPlayers()) do
+                if plr ~= LP and (not name or string.find(string.lower(plr.Name), string.lower(name), 1, true)) then
+                    local parts = {}
+                    for _, it in ipairs(inventoryItems(plr)) do parts[#parts + 1] = it.name .. " x" .. it.count end
+                    print("[Inv] " .. plr.Name .. " -> " .. (#parts > 0 and table.concat(parts, ", ") or "(nothing visible)"))
+                    print("  player children:")
+                    for _, c in ipairs(plr:GetChildren()) do print("    " .. c.Name .. " (" .. c.ClassName .. ")") end
+                    if plr.Character then
+                        print("  character children:")
+                        for _, c in ipairs(plr.Character:GetChildren()) do print("    " .. c.Name .. " (" .. c.ClassName .. ")") end
+                    end
+                end
+            end
+        end
+        getgenv().PrintItemIcons = function()
+            print("[Icons] item -> image (false = none found, so a coloured square is shown)")
+            for name, img in pairs(iconCache) do print("  " .. name .. " -> " .. tostring(img)) end
+        end
+    end
+end)
+
+---------------------------------------------------------------- BED BREAKER (passive)
+-- No teleporting. When you walk within SwingRange of a bed, it fires the game MineBlock remote
+-- at it (same arguments the game sends: pickaxe name, the bed, its grid position, ray origin,
+-- ray direction). If you are holding something else it briefly equips the pickaxe, then puts your
+-- item back once you walk away. Beds covered by blocks may still need those blocks broken first.
+local bedCache = {}
+local lastBedSwing, lastBedActive, lastBedDebug = 0, 0, 0
+local breakerSwapped, breakerPrev, breakerPrevKnown = false, nil, false
+
+task.spawn(function()
+    while alive do
+        local fresh = {}
+        local container = workspace:FindFirstChild("BedsContainer")
+        if container then
+            for _, b in ipairs(container:GetChildren()) do fresh[#fresh + 1] = b end
+        else
+            for _, obj in ipairs(workspace:GetDescendants()) do
+                if (obj:IsA("BasePart") or obj:IsA("Model")) and string.find(string.lower(obj.Name), "bed", 1, true) then
+                    fresh[#fresh + 1] = obj
+                end
+            end
+        end
+        bedCache = fresh
+        task.wait(container and 1 or 3)
+    end
+end)
+
+local function bedPos(obj)
+    if obj:IsA("BasePart") then return obj.Position end
+    if obj:IsA("Model") then
+        local ok, pivot = pcall(function() return obj:GetPivot().Position end)
+        if ok then return pivot end
+    end
+    return nil
+end
+
+local function isOwnBed(obj)
+    if not LP.Team then return false end
+    for _, attr in ipairs({"Team", "TeamName", "team"}) do
+        local v = obj:GetAttribute(attr)
+        if type(v) == "string" and v == LP.Team.Name then return true end
+    end
+    return false
+end
+
+conn(RunService.Heartbeat, function()
+    if not Cfg_Breaker.Enabled then return end
+    local root = getRoot()
+    if not root then return end
+    local now = os.clock()
+
+    local targetBed, targetPos
+    for _, bed in ipairs(bedCache) do
+        if bed.Parent and not isOwnBed(bed) then
+            local p = bedPos(bed)
+            if p and (p - root.Position).Magnitude <= Cfg_Breaker.SwingRange then
+                targetBed, targetPos = bed, p
+                break
+            end
+        end
+    end
+
+    if not targetBed then
+        if now - lastBedDebug > 3 then
+            lastBedDebug = now
+            local nearest, nd = nil, math.huge
+            for _, bed in ipairs(bedCache) do
+                local bp = bed.Parent and bedPos(bed)
+                if bp then
+                    local d2 = (bp - root.Position).Magnitude
+                    if d2 < nd then nearest, nd = bed, d2 end
+                end
+            end
+            if nearest then
+                print(("[BedBreaker] no bed within %d studs. Nearest is %.1f studs away (%s)."):format(Cfg_Breaker.SwingRange, nd, nearest:GetFullName()))
+            else
+                print("[BedBreaker] no beds found (BedsContainer missing or empty).")
+            end
+        end
+        if breakerSwapped and now - lastBedActive > 0.6 then
+            breakerSwapped = false
+            local equip = getItemRemote("EquipTool")
+            if equip and breakerPrevKnown then
+                pcall(function()
+                    if breakerPrev then equip:FireServer(breakerPrev) else equip:FireServer() end
+                end)
+            end
+            breakerPrev = nil
+        end
+        return
+    end
+    lastBedActive = now
+
+    local mine = getItemRemote("MineBlock")
+    if not mine then
+        logOnce("nomine", "ReplicatedStorage.Remotes.ItemsRemotes.MineBlock was not found.")
+        return
+    end
+
+    local pick = pickaxeName()
+    if not breakerSwapped and currentItem ~= pick then
+        local equip = getItemRemote("EquipTool")
+        if equip then
+            breakerPrev, breakerPrevKnown = currentItem, itemKnown
+            breakerSwapped = true
+            pcall(function() equip:FireServer(pick) end)
+        end
+    end
+
+    if now - lastBedSwing < MINE_INTERVAL then return end
+    lastBedSwing = now
+
+    local origin = root.Position + Vector3.new(0, 1.5, 0)
+    local dir = targetPos - origin
+    if dir.Magnitude < 0.01 then return end
+    dir = dir.Unit
+    pcall(function()
+        mine:FireServer(pick, targetBed,
+            math.round(targetPos.X), math.round(targetPos.Y), math.round(targetPos.Z),
+            origin.X, origin.Y, origin.Z, dir.X, dir.Y, dir.Z)
+    end)
+    logOnce("mine", "MineBlock -> bed with " .. pick)
+end)
+
+pcall(function()
+    if getgenv then
+        getgenv().PrintAllBeds = function()
+            print("[BedBreaker] beds known to the script:")
+            for _, b in ipairs(bedCache) do
+                local p = bedPos(b)
+                print(("  %s (%s) at %s"):format(b:GetFullName(), b.ClassName, p and tostring(p) or "?"))
+                for k, v in pairs(b:GetAttributes()) do print("    attr " .. tostring(k) .. " = " .. tostring(v)) end
+            end
+        end
+    end
+end)
+
+---------------------------------------------------------------- REMOTE SPY
+-- Logs what the game sends to the server when YOU do something (swing, break a bed block).
+-- Turn it on, do the action once manually, and read the console: that shows the real attack /
+-- block-break remote, which is what a true in-game kill aura / reach / bed breaker has to call.
+local hookInstalled = false
+local spyQueue = {}
+local SPY_NOISE = {"ismoving", "camera", "heartbeat", "ping", "updateattribute"}
+
+local function fmtVal(v, depth)
+    depth = depth or 0
+    local t = typeof(v)
+    if t == "string" then return '"' .. v .. '"' end
+    if t == "Instance" then
+        local ok, n = pcall(function() return v:GetFullName() end)
+        return ok and n or tostring(v)
+    end
+    if t == "table" then
+        if depth >= 2 then return "{...}" end
+        local parts, n = {}, 0
+        for k, val in pairs(v) do
+            n += 1
+            if n > 8 then parts[#parts + 1] = "..." break end
+            parts[#parts + 1] = tostring(k) .. "=" .. fmtVal(val, depth + 1)
+        end
+        return "{" .. table.concat(parts, ", ") .. "}"
+    end
+    return tostring(v)
+end
+
+local function installHook()
+    if hookInstalled then return end
+    if not hookmetamethod or not getnamecallmethod or not newcclosure then
+        warn("[BadFight] executor lacks hookmetamethod/getnamecallmethod/newcclosure: held-item tracking and Remote Spy are unavailable.")
+        return
+    end
+    local ok, err = pcall(function()
+        local old
+        old = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
+            local method = getnamecallmethod()
+            if (method == "FireServer" or method == "InvokeServer") and typeof(self) == "Instance" then
+                if method == "FireServer" and self.Name == "EquipTool" then
+                    local first = ...
+                    trackEquip(first)
+                end
+                if Cfg_Spy.Enabled and alive and #spyQueue < 200 then
+                    spyQueue[#spyQueue + 1] = {self, method, table.pack(...)}
+                end
+            end
+            return old(self, ...)
+        end))
+    end)
+    if ok then
+        hookInstalled = true
+    else
+        warn("[BadFight] hook failed: " .. tostring(err))
+    end
+end
+installHook()
+
+task.spawn(function()
+    local lastLine, lastAt = "", 0
+    while alive do
+        task.wait(0.1)
+        while #spyQueue > 0 do
+            local item = table.remove(spyQueue, 1)
+            local okName, full = pcall(function() return item[1]:GetFullName() end)
+            full = okName and full or tostring(item[1])
+            local parts = {}
+            for i = 1, item[3].n do parts[i] = fmtVal(item[3][i]) end
+            local line = ("[Spy] %s :%s( %s )"):format(full, item[2], table.concat(parts, ", "))
+            local lower = string.lower(line)
+            local noisy = false
+            for _, w in ipairs(SPY_NOISE) do
+                if string.find(lower, w, 1, true) then noisy = true break end
+            end
+            if not noisy and (line ~= lastLine or os.clock() - lastAt > 0.5) then
+                print(line)
+                lastLine, lastAt = line, os.clock()
+            end
+        end
+    end
+end)
+
+---------------------------------------------------------------- KEYBINDS
+local listeningEntry = nil
+local BIND_FILE = "BadFightClient_binds.json"
+local hasFS = type(writefile) == "function" and type(readfile) == "function" and type(isfile) == "function"
+local savedBinds = {}
+if hasFS and isfile(BIND_FILE) then
+    pcall(function() savedBinds = HttpService:JSONDecode(readfile(BIND_FILE)) end)
+end
+local function saveBinds()
+    if not hasFS then return end
+    local t = {}
+    for n, e in pairs(modules) do
+        if e.bind then t[n] = e.bind.Name end
+    end
+    pcall(function() writefile(BIND_FILE, HttpService:JSONEncode(t)) end)
+end
+
+---------------------------------------------------------------- UI
+local Gui = new("ScreenGui", {Name = "BadFightClient", ResetOnSpawn = false, ZIndexBehavior = Enum.ZIndexBehavior.Sibling}, guiParent)
+local Main = new("Frame", {Size = UDim2.new(0, 560, 0, 360), Position = UDim2.new(0, 20, 0.5, -180), BackgroundColor3 = C.bg, BorderSizePixel = 0, Active = true, Draggable = true, ClipsDescendants = true}, Gui)
+corner(Main, 10)
+new("UIStroke", {Color = Color3.fromRGB(44, 45, 54), Thickness = 1}, Main)
+-- a Modal button frees the mouse from the game's lock while this window is open
+new("TextButton", {Size = UDim2.new(0, 0, 0, 0), BackgroundTransparency = 1, Text = "", Modal = true}, Main)
+
+pcall(function() RunService:UnbindFromRenderStep("BadFightMouseUnlock") end)
+RunService:BindToRenderStep("BadFightMouseUnlock", Enum.RenderPriority.Last.Value, function()
+    if Main.Visible then
+        UIS.MouseBehavior = Enum.MouseBehavior.Default
+        UIS.MouseIconEnabled = true
+    end
+end)
+
+local Sidebar = new("Frame", {Size = UDim2.new(0, 130, 1, 0), BackgroundColor3 = C.sidebar}, Main)
+new("TextLabel", {Size = UDim2.new(1, -20, 0, 34), Position = UDim2.new(0, 14, 0, 6), BackgroundTransparency = 1, Text = "BADFIGHT", TextColor3 = C.accent, Font = Enum.Font.GothamBlack, TextSize = 14, TextXAlignment = Enum.TextXAlignment.Left}, Sidebar)
+local SidebarList = new("Frame", {Size = UDim2.new(1, -12, 1, -48), Position = UDim2.new(0, 6, 0, 44), BackgroundTransparency = 1}, Sidebar)
+new("UIListLayout", {Padding = UDim.new(0, 3), SortOrder = Enum.SortOrder.LayoutOrder}, SidebarList)
+
+local ColumnArea = new("ScrollingFrame", {Size = UDim2.new(1, -130, 1, 0), Position = UDim2.new(0, 130, 0, 0), BackgroundTransparency = 1, BorderSizePixel = 0, ScrollBarThickness = 4, ScrollingDirection = Enum.ScrollingDirection.X, CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.X}, Main)
+new("UIListLayout", {FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 8), SortOrder = Enum.SortOrder.LayoutOrder}, ColumnArea)
+new("UIPadding", {PaddingLeft = UDim.new(0, 8), PaddingTop = UDim.new(0, 8), PaddingBottom = UDim.new(0, 8)}, ColumnArea)
+
+local columns = {}
+
+local function sidebarItem(label)
+    local btn = new("TextButton", {Size = UDim2.new(1, 0, 0, 30), BackgroundColor3 = C.sidebar, Text = "", AutoButtonColor = false}, SidebarList)
+    corner(btn, 6)
+    local iconBox = new("Frame", {Size = UDim2.new(0, 18, 0, 18), Position = UDim2.new(0, 8, 0.5, -9), BackgroundColor3 = C.track}, btn)
+    corner(iconBox, 5)
+    new("TextLabel", {Size = UDim2.new(1, 0, 1, 0), BackgroundTransparency = 1, Text = label:sub(1, 1), TextColor3 = C.dim, Font = Enum.Font.GothamBold, TextSize = 11}, iconBox)
+    local lbl = new("TextLabel", {Size = UDim2.new(1, -36, 1, 0), Position = UDim2.new(0, 32, 0, 0), BackgroundTransparency = 1, Text = label, TextColor3 = C.dim, Font = Enum.Font.GothamMedium, TextSize = 13, TextXAlignment = Enum.TextXAlignment.Left}, btn)
+    return btn, lbl
+end
+
+local function createColumn(name)
+    local card = new("Frame", {Size = UDim2.new(0, 190, 1, -16), BackgroundColor3 = C.card, Visible = false}, ColumnArea)
+    corner(card, 8)
+    local head = new("Frame", {Size = UDim2.new(1, 0, 0, 30), BackgroundColor3 = C.cardHeader}, card)
+    corner(head, 8)
+    new("Frame", {Size = UDim2.new(1, 0, 0, 8), Position = UDim2.new(0, 0, 1, -8), BackgroundColor3 = C.cardHeader, BorderSizePixel = 0}, head)
+    new("TextLabel", {Size = UDim2.new(1, -16, 1, 0), Position = UDim2.new(0, 10, 0, 0), BackgroundTransparency = 1, Text = name, TextColor3 = C.text, Font = Enum.Font.GothamBold, TextSize = 13, TextXAlignment = Enum.TextXAlignment.Left}, head)
+    local body = new("ScrollingFrame", {Size = UDim2.new(1, -4, 1, -34), Position = UDim2.new(0, 2, 0, 32), BackgroundTransparency = 1, BorderSizePixel = 0, ScrollBarThickness = 3, CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.Y}, card)
+    new("UIListLayout", {Padding = UDim.new(0, 2), SortOrder = Enum.SortOrder.LayoutOrder}, body)
+    new("UIPadding", {PaddingLeft = UDim.new(0, 4), PaddingRight = UDim.new(0, 4), PaddingBottom = UDim.new(0, 6)}, body)
+    columns[name] = {frame = card, open = false}
+    return body
+end
+
+local function toggleColumn(name, lbl, btn)
+    local col = columns[name]
+    col.open = not col.open
+    col.frame.Visible = col.open
+    lbl.TextColor3 = col.open and C.accent or C.dim
+    btn.BackgroundColor3 = col.open and C.sidebarSelected or C.sidebar
+end
+
+-- explicit LayoutOrder numbers so rows never depend on tie-breaking
+local function ord(parent)
+    local n = (parent:GetAttribute("n") or 0) + 1
+    parent:SetAttribute("n", n)
+    return n
+end
+
+local function miniSlider(parent, label, cfgTable, key, min, max, step)
+    local f = new("Frame", {Size = UDim2.new(1, 0, 0, 30), BackgroundTransparency = 1, LayoutOrder = ord(parent)}, parent)
+    local lbl = new("TextLabel", {Size = UDim2.new(1, 0, 0, 13), BackgroundTransparency = 1, Text = label .. ": " .. tostring(cfgTable[key]), TextColor3 = C.dim, Font = Enum.Font.Gotham, TextSize = 10, TextXAlignment = Enum.TextXAlignment.Left}, f)
+    local track = new("Frame", {Size = UDim2.new(1, 0, 0, 10), Position = UDim2.new(0, 0, 0, 15), BackgroundTransparency = 1, Active = true}, f)
+    local bar = new("Frame", {Size = UDim2.new(1, 0, 0, 4), Position = UDim2.new(0, 0, 0.5, -2), BackgroundColor3 = C.track}, track)
+    corner(bar, 2)
+    local fill = new("Frame", {Size = UDim2.new(math.clamp((cfgTable[key] - min) / (max - min), 0, 1), 0, 1, 0), BackgroundColor3 = C.accent}, bar)
+    corner(fill, 2)
+    local dragging = false
     local function setFrom(x)
-        local rel = math.clamp((x - bar.AbsolutePosition.X) / math.max(bar.AbsoluteSize.X, 1), 0, 1)
+        local rel = math.clamp((x - track.AbsolutePosition.X) / math.max(track.AbsoluteSize.X, 1), 0, 1)
         local v = math.floor((min + (max - min) * rel) / step + 0.5) * step
         v = tonumber(string.format("%.3f", v))
-        local t, k = ref(path)
-        t[k] = v
-        refresh()
+        cfgTable[key] = v
+        fill.Size = UDim2.new(rel, 0, 1, 0)
+        lbl.Text = label .. ": " .. tostring(v)
     end
-    local dragging = false
-    bar.InputBegan:Connect(function(i)
+    track.InputBegan:Connect(function(i)
         if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then
             dragging = true
+            Main.Draggable = false
             setFrom(i.Position.X)
         end
     end)
     conn(UIS.InputEnded, function(i)
-        if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then dragging = false end
+        if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then
+            dragging = false
+            Main.Draggable = true
+        end
     end)
     conn(UIS.InputChanged, function(i)
         if dragging and (i.UserInputType == Enum.UserInputType.MouseMovement or i.UserInputType == Enum.UserInputType.Touch) then
             setFrom(i.Position.X)
         end
     end)
-    -- type an exact value (can go past the slider max, only clamped to min)
-    box.FocusLost:Connect(function()
-        local n = tonumber(box.Text)
-        if n then
-            local t, k = ref(path)
-            t[k] = math.max(n, min)
-        end
-        refresh()
-    end)
-    refreshers[#refreshers + 1] = refresh
-    refresh()
 end
- 
-local function textbox(page, text, path, cb)
-    local f = new("Frame", {Size = UDim2.new(1, 0, 0, 44), BackgroundTransparency = 1}, page)
-    new("TextLabel", {Size = UDim2.new(1, 0, 0, 16), BackgroundTransparency = 1, Text = text, TextColor3 = C.text, Font = Enum.Font.Gotham, TextSize = 12, TextXAlignment = Enum.TextXAlignment.Left}, f)
-    local box = new("TextBox", {Size = UDim2.new(1, 0, 0, 24), Position = UDim2.new(0, 0, 0, 18), BackgroundColor3 = C.item, TextColor3 = C.text, Font = Enum.Font.Gotham, TextSize = 12, ClearTextOnFocus = false, TextXAlignment = Enum.TextXAlignment.Left}, f)
-    corner(box, 4)
-    new("UIPadding", {PaddingLeft = UDim.new(0, 6)}, box)
-    local function refresh() local t, k = ref(path) box.Text = tostring(t[k]) end
-    box.FocusLost:Connect(function()
-        local t, k = ref(path)
-        t[k] = box.Text
-        if cb then cb() end
+
+local function miniToggle(parent, label, cfgTable, key)
+    local f = new("Frame", {Size = UDim2.new(1, 0, 0, 20), BackgroundTransparency = 1, LayoutOrder = ord(parent)}, parent)
+    new("TextLabel", {Size = UDim2.new(1, -22, 1, 0), BackgroundTransparency = 1, Text = label, TextColor3 = C.text, Font = Enum.Font.Gotham, TextSize = 11, TextXAlignment = Enum.TextXAlignment.Left}, f)
+    local box = new("TextButton", {Size = UDim2.new(0, 14, 0, 14), Position = UDim2.new(1, -14, 0.5, -7), BackgroundColor3 = cfgTable[key] and C.accent or C.track, Text = ""}, f)
+    corner(box, 3)
+    box.MouseButton1Click:Connect(function()
+        cfgTable[key] = not cfgTable[key]
+        box.BackgroundColor3 = cfgTable[key] and C.accent or C.track
     end)
-    refreshers[#refreshers + 1] = refresh
-    refresh()
 end
- 
-local function cycle(page, text, path, options)
-    local btn = new("TextButton", {Size = UDim2.new(1, 0, 0, 28), BackgroundColor3 = C.item, TextColor3 = Color3.new(1, 1, 1), Font = Enum.Font.Gotham, TextSize = 12}, page)
-    corner(btn)
-    local function refresh() local t, k = ref(path) btn.Text = text .. ":  " .. tostring(t[k]) .. "  (click)" end
+
+local function miniCycle(parent, label, cfgTable, key, options)
+    local btn = new("TextButton", {Size = UDim2.new(1, 0, 0, 20), BackgroundColor3 = C.track, Text = label .. ": " .. tostring(cfgTable[key]), TextColor3 = C.text, Font = Enum.Font.Gotham, TextSize = 10, LayoutOrder = ord(parent)}, parent)
+    corner(btn, 3)
     btn.MouseButton1Click:Connect(function()
-        local t, k = ref(path)
-        local idx = table.find(options, t[k]) or 0
-        t[k] = options[(idx % #options) + 1]
-        refresh()
+        local idx = table.find(options, cfgTable[key]) or 0
+        cfgTable[key] = options[(idx % #options) + 1]
+        btn.Text = label .. ": " .. tostring(cfgTable[key])
     end)
-    refreshers[#refreshers + 1] = refresh
-    refresh()
 end
- 
-local capture = nil
-local function keybind(page, text, path)
-    local btn = new("TextButton", {Size = UDim2.new(1, 0, 0, 28), BackgroundColor3 = C.item, TextColor3 = Color3.new(1, 1, 1), Font = Enum.Font.Gotham, TextSize = 12}, page)
-    corner(btn)
-    local function refresh() local t, k = ref(path) btn.Text = text .. ":  " .. tostring(t[k]) end
-    btn.MouseButton1Click:Connect(function()
-        btn.Text = text .. ":  press a key..."
-        capture = function(kc)
-            local t, k = ref(path)
-            t[k] = kc.Name
-            refresh()
+
+local function miniNote(parent, text, h)
+    new("TextLabel", {Size = UDim2.new(1, 0, 0, h), BackgroundTransparency = 1, TextWrapped = true, Text = text, TextColor3 = C.dim, Font = Enum.Font.Gotham, TextSize = 10, TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Top, LayoutOrder = ord(parent)}, parent)
+end
+
+-- contentHeight = total height of what the builder adds (children + the gaps between them).
+-- The keybind row (22px + 5px gap) and bottom padding (6px) are added automatically.
+local function moduleRow(parent, name, cfgTable, key, contentHeight, settingsBuilder, onToggle)
+    local HEAD_H = 26
+    local total = (contentHeight or 0) + 27 + 6
+    local container = new("Frame", {Size = UDim2.new(1, 0, 0, HEAD_H), BackgroundTransparency = 1}, parent)
+
+    local head = new("Frame", {Size = UDim2.new(1, 0, 0, HEAD_H), BackgroundTransparency = 1}, container)
+    local nameBtn = new("TextButton", {Size = UDim2.new(1, -26, 1, 0), BackgroundTransparency = 1, Text = name, TextColor3 = cfgTable[key] and C.accent or C.text, Font = Enum.Font.GothamMedium, TextSize = 13, TextXAlignment = Enum.TextXAlignment.Left}, head)
+    new("UIPadding", {PaddingLeft = UDim.new(0, 8)}, nameBtn)
+
+    local dotsBtn = new("TextButton", {Size = UDim2.new(0, 22, 0, 22), Position = UDim2.new(1, -24, 0.5, -11), BackgroundTransparency = 1, Text = ""}, head)
+    for i = 0, 2 do
+        local d = new("Frame", {Size = UDim2.new(0, 3, 0, 3), Position = UDim2.new(0.5, -1.5, 0, 4 + i * 6), BackgroundColor3 = C.dim, Name = "dot" .. i}, dotsBtn)
+        corner(d, 2)
+    end
+
+    local settingsFrame = new("Frame", {Size = UDim2.new(1, 0, 0, total), Position = UDim2.new(0, 0, 0, HEAD_H), BackgroundTransparency = 1, Visible = false}, container)
+    new("UIPadding", {PaddingLeft = UDim.new(0, 10), PaddingRight = UDim.new(0, 6)}, settingsFrame)
+    new("UIListLayout", {Padding = UDim.new(0, 5), SortOrder = Enum.SortOrder.LayoutOrder}, settingsFrame)
+
+    local entry = {bind = nil, name = name, cfgTable = cfgTable, key = key}
+    modules[name] = entry
+    local function refreshName() nameBtn.TextColor3 = cfgTable[key] and C.accent or C.text end
+    entry.refresh = refreshName
+    entry.toggle = function()
+        cfgTable[key] = not cfgTable[key]
+        refreshName()
+        if onToggle then onToggle(cfgTable[key]) end
+    end
+    nameBtn.MouseButton1Click:Connect(entry.toggle)
+
+    -- keybind button (first row of the settings panel)
+    local bindBtn = new("TextButton", {Size = UDim2.new(1, 0, 0, 22), BackgroundColor3 = C.track, Text = "", TextColor3 = C.text, Font = Enum.Font.Gotham, TextSize = 10, LayoutOrder = ord(settingsFrame)}, settingsFrame)
+    corner(bindBtn, 4)
+    entry.updateBindText = function()
+        bindBtn.Text = "Keybind: " .. (entry.bind and entry.bind.Name or "None") .. "  (click to set)"
+    end
+    local saved = savedBinds[name]
+    if saved then
+        local okKc, kc = pcall(function() return Enum.KeyCode[saved] end)
+        if okKc and kc then entry.bind = kc end
+    end
+    entry.updateBindText()
+    bindBtn.MouseButton1Click:Connect(function()
+        listeningEntry = entry
+        bindBtn.Text = "press a key...  (same key again = clear)"
+    end)
+
+    local expanded = false
+    local function setDotColor(col)
+        for _, d in ipairs(dotsBtn:GetChildren()) do
+            if d:IsA("Frame") then d.BackgroundColor3 = col end
         end
+    end
+    dotsBtn.MouseButton1Click:Connect(function()
+        expanded = not expanded
+        settingsFrame.Visible = expanded
+        container.Size = UDim2.new(1, 0, 0, HEAD_H + (expanded and total or 0))
+        setDotColor(expanded and C.accent or C.dim)
     end)
-    refreshers[#refreshers + 1] = refresh
-    refresh()
+
+    if settingsBuilder then settingsBuilder(settingsFrame) end
+    return container
 end
- 
-local statusLbl
-local function setStatus(msg) if statusLbl then statusLbl.Text = msg end end
-local function button(page, text, fn, color)
-    local b = new("TextButton", {Size = UDim2.new(1, 0, 0, 28), BackgroundColor3 = color or C.item, Text = text, TextColor3 = Color3.new(1, 1, 1), Font = Enum.Font.GothamMedium, TextSize = 12}, page)
-    corner(b)
-    b.MouseButton1Click:Connect(fn)
+
+-- COMBAT
+do
+    local body = createColumn("Combat")
+    moduleRow(body, "Kill Aura", Cfg.Combat, "KillAura", 310, function(f)
+        miniSlider(f, "Range", Cfg.Combat, "Range", 4, 24, 1)
+        miniSlider(f, "Angle (360 = all around)", Cfg.Combat, "Angle", 0, 360, 5)
+        miniSlider(f, "Swing Time (s)", Cfg.Combat, "SwingTime", 0.01, 1, 0.01)
+        miniSlider(f, "Multi Hit", Cfg.Combat, "MultiHit", 1, 5, 1)
+        miniToggle(f, "Through Walls", Cfg.Combat, "ThroughWalls")
+        miniToggle(f, "Face Target", Cfg.Combat, "FaceTarget")
+        miniToggle(f, "Swing Only", Cfg.Combat, "SwingOnly")
+        miniToggle(f, "Limit Item (sword only)", Cfg.Combat, "LimitItem")
+        miniToggle(f, "No Swing", Cfg.Combat, "NoSwing")
+        miniToggle(f, "Animation", Cfg.Combat, "Animation")
+        miniCycle(f, "Priority", Cfg.Combat, "Priority", {"Nearest", "LowestHealth"})
+    end)
 end
- 
----------------------------------------------------------------- UI PAGES
-local pFarm = addPage("Farm", 1)
-header(pFarm, "AUTO FARM")
-toggle(pFarm, "Auto Farm", {"Farm", "Enabled"}, function() State.target = nil end)
-cycle(pFarm, "Target Priority", {"Farm", "Priority"}, {"Nearest", "Largest", "Random"})
-slider(pFarm, "Search Range", {"Farm", "Range"}, 50, 2000, 10)
-slider(pFarm, "Side Distance", {"Farm", "SideDist"}, 0, 120, 1)
-slider(pFarm, "Height Offset", {"Farm", "Height"}, -20, 60, 1)
-slider(pFarm, "Reposition Threshold", {"Farm", "RepositionThreshold"}, 0, 60, 1)
-slider(pFarm, "Retarget Cooldown (s)", {"Farm", "RetargetCD"}, 0.05, 5, 0.05)
-slider(pFarm, "Target Timeout (s, 0 = off)", {"Farm", "TargetTimeout"}, 0, 120, 1)
-slider(pFarm, "Blacklist Time (s)", {"Farm", "BlacklistTime"}, 1, 300, 1)
- 
-local pTarget = addPage("Targeting", 2)
-header(pTarget, "WHAT COUNTS AS A BUILDING")
-slider(pTarget, "Min Size (magnitude)", {"Target", "MinSize"}, 0, 500, 1)
-slider(pTarget, "Max Size (magnitude)", {"Target", "MaxSize"}, 10, 2000, 5)
-slider(pTarget, "Min Height", {"Target", "MinY"}, 0, 100, 0.5)
-slider(pTarget, "Max Height", {"Target", "MaxY"}, 1, 500, 1)
-slider(pTarget, "Max World Y", {"Target", "MaxWorldY"}, 0, 2000, 5)
-slider(pTarget, "Min Distance", {"Target", "MinDist"}, 0, 200, 1)
-button(pTarget, "Clear Blacklist", function() Blacklist = {} setStatus("blacklist cleared") end)
- 
-local pHunt = addPage("Hunt", 3)
-header(pHunt, "PVP AUTO HUNT")
-toggle(pHunt, "Auto Hunt Players", {"Hunt", "Enabled"}, function() HuntState.target = nil end)
-cycle(pHunt, "Target Priority", {"Hunt", "Priority"}, {"Nearest", "LowestHealth"})
-slider(pHunt, "Search Range", {"Hunt", "Range"}, 20, 1000, 10)
-toggle(pHunt, "Hover Above Head", {"Hunt", "HoverAbove"})
-slider(pHunt, "Hover Height", {"Hunt", "HoverHeight"}, 2, 60, 1)
-slider(pHunt, "Hover Snap Distance", {"Hunt", "HoverSnap"}, 0.5, 20, 0.5)
-slider(pHunt, "Engage Distance (ground mode)", {"Hunt", "EngageDist"}, 2, 60, 1)
-slider(pHunt, "Retarget Cooldown (s)", {"Hunt", "RetargetCD"}, 0.05, 3, 0.05)
-slider(pHunt, "Switch If Closer By", {"Hunt", "SwitchIfCloser"}, 0, 100, 1)
-header(pHunt, "NOTE")
-new("TextLabel", {Size = UDim2.new(1, 0, 0, 50), BackgroundTransparency = 1, TextWrapped = true, Text = "Uses the Skills tab's keys/cooldowns to attack once in Engage Distance. Turn on some skills there too.", TextColor3 = C.dim, Font = Enum.Font.Gotham, TextSize = 11, TextXAlignment = Enum.TextXAlignment.Left}, pHunt)
- 
-local pSkills = addPage("Skills", 4)
-header(pSkills, "AUTO SKILL")
-toggle(pSkills, "Skill Spam (always)", {"Skills", "Enabled"})
-slider(pSkills, "Cycle Interval (s)", {"Skills", "CycleInterval"}, 0.05, 3, 0.05)
-slider(pSkills, "Key Hold Time (s)", {"Skills", "HoldTime"}, 0.01, 0.5, 0.01)
-slider(pSkills, "Gap Between Keys (s)", {"Skills", "KeyGap"}, 0.01, 1, 0.01)
-slider(pSkills, "Farm Skill Range", {"Skills", "Range"}, 5, 300, 1)
-header(pSkills, "PER-SKILL")
-for _, k in ipairs(SKILL_ORDER) do
-    toggle(pSkills, "Skill " .. k, {"Skills", "Keys", k})
-    slider(pSkills, "Skill " .. k .. " cooldown (s)", {"Skills", "Cooldowns", k}, 0, 30, 0.1)
+
+-- MOVEMENT
+do
+    local body = createColumn("Movement")
+    moduleRow(body, "Speed", Cfg.Movement, "SpeedEnabled", 30, function(f)
+        miniSlider(f, "WalkSpeed", Cfg.Movement, "WalkSpeed", 16, 200, 1)
+    end)
+    moduleRow(body, "Fly", Cfg.Movement, "FlyEnabled", 65, function(f)
+        miniSlider(f, "Fly Speed", Cfg.Movement, "FlySpeed", 10, 200, 1)
+        miniSlider(f, "Ground Touch Every (s)", Cfg.Movement, "FlyGroundTouchInterval", 0.5, 5, 0.1)
+    end)
+    moduleRow(body, "Long Jump", Cfg_LJ, "Enabled", 30, function(f)
+        miniSlider(f, "Jump Speed", Cfg_LJ, "Speed", 30, 200, 5)
+    end)
 end
- 
-local pMove = addPage("Movement", 5)
-header(pMove, "MOVEMENT")
-toggle(pMove, "Apply Speed / Jump", {"Move", "ApplySpeed"})
-slider(pMove, "WalkSpeed", {"Move", "WalkSpeed"}, 16, 300, 1)
-slider(pMove, "JumpPower", {"Move", "Jump"}, 30, 300, 1)
-toggle(pMove, "Fly (WASD, Space up, Ctrl down)", {"Move", "Fly"})
-slider(pMove, "Fly Speed", {"Move", "FlySpeed"}, 10, 300, 1)
-toggle(pMove, "Noclip", {"Move", "Noclip"})
- 
-local pMisc = addPage("Misc", 6)
-header(pMisc, "INVISIBILITY")
-toggle(pMisc, "Invisible (visual only, your screen)", {"Misc", "Invisible"})
-header(pMisc, "SKY HIDE (real hide, farm/hunt pause while on)")
-toggle(pMisc, "Sky Hide", {"Misc", "SkyHide"})
-slider(pMisc, "Sky Height", {"Misc", "SkyHeight"}, 500, 10000, 100)
-header(pMisc, "GODMODE")
-toggle(pMisc, "God Mode (force full health)", {"Misc", "GodMode"})
-toggle(pMisc, "Untouchable (skip enemy hit detection)", {"Misc", "GodModeUntouchable"})
-header(pMisc, "AUTOPLAY")
-toggle(pMisc, "Auto Respawn On Death", {"Misc", "AutoPlay"})
-slider(pMisc, "Respawn Delay (s)", {"Misc", "AutoPlayRespawnDelay"}, 0, 10, 0.1)
-toggle(pMisc, "Also Auto-Click Respawn Buttons", {"Misc", "AutoPlayClickButtons"})
-header(pMisc, "ENERGY")
-toggle(pMisc, "Infinite Energy (client values)", {"Misc", "InfEnergy"})
-textbox(pMisc, "Energy keywords (comma separated)", {"Misc", "EnergyKeywords"}, function() task.spawn(scanEnergy) end)
-slider(pMisc, "Energy Value", {"Misc", "EnergyValue"}, 100, 999999, 100)
-header(pMisc, "CELL (currency)")
-toggle(pMisc, "Infinite Cell (client values)", {"Misc", "InfCell"})
-textbox(pMisc, "Cell keywords (comma separated)", {"Misc", "CellKeywords"}, function() task.spawn(scanCell) end)
-slider(pMisc, "Cell Value", {"Misc", "CellValue"}, 1000, 999999999, 1000)
-button(pMisc, "Rescan Cell Now", function() task.spawn(scanCell) setStatus("cell rescan requested") end)
-header(pMisc, "KEYBINDS")
-keybind(pMisc, "Toggle UI", {"Misc", "ToggleUI"})
-keybind(pMisc, "Toggle AutoFarm", {"Misc", "ToggleFarm"})
-header(pMisc, "CONFIG")
- 
+
+-- RENDER
+do
+    local body = createColumn("Render")
+    moduleRow(body, "ESP", Cfg_ESP, "Enabled", 55, function(f)
+        miniSlider(f, "Max Distance", Cfg_ESP, "MaxDistance", 50, 2000, 50)
+        miniToggle(f, "Show Teammates", Cfg_ESP, "ShowTeammates")
+    end)
+    moduleRow(body, "NameTags", Cfg_Tags, "Enabled", 45, function(f)
+        miniToggle(f, "Show Health", Cfg_Tags, "ShowHealth")
+        miniToggle(f, "Show Distance", Cfg_Tags, "ShowDistance")
+    end)
+    moduleRow(body, "Inventory ESP", Cfg_Inv, "Enabled", 0, nil)
+    moduleRow(body, "Module List", Cfg_List, "Enabled", 30, function(f)
+        miniSlider(f, "Size", Cfg_List, "Size", 12, 36, 1)
+    end)
+    moduleRow(body, "Target HUD", Cfg_THUD, "Enabled", 0, nil)
+end
+
+-- UTILITY
+do
+    local body = createColumn("Utility")
+    moduleRow(body, "Bed Breaker", Cfg_Breaker, "Enabled", 75, function(f)
+        miniSlider(f, "Swing Range", Cfg_Breaker, "SwingRange", 3, 18, 1)
+        miniNote(f, "Mines beds in range with the MineBlock remote. Run PrintAllBeds() in the console to see what it found.", 40)
+    end)
+    moduleRow(body, "Remote Spy", Cfg_Spy, "Enabled", 40, function(f)
+        miniNote(f, "Prints the remotes the game fires (swing, mine, equip) to the console.", 40)
+    end)
+end
+
+local sidebarRefs = {}
+for _, name in ipairs({"Combat", "Movement", "Render", "Utility"}) do
+    local btn, lbl = sidebarItem(name)
+    btn.MouseButton1Click:Connect(function() toggleColumn(name, lbl, btn) end)
+    sidebarRefs[name] = {btn = btn, lbl = lbl}
+end
+toggleColumn("Combat", sidebarRefs.Combat.lbl, sidebarRefs.Combat.btn)
+
+---------------------------------------------------------------- INPUT
+conn(UIS.InputBegan, function(input, gpe)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 then lastMouseDown = os.clock() end
+    if listeningEntry and input.UserInputType == Enum.UserInputType.Keyboard then
+        local e = listeningEntry
+        listeningEntry = nil
+        if input.KeyCode == Enum.KeyCode.Escape then
+            -- cancel: keep whatever it was bound to
+        elseif e.bind == input.KeyCode then
+            e.bind = nil -- pressing the key it is already bound to clears it
+        else
+            e.bind = input.KeyCode
+        end
+        e.updateBindText()
+        saveBinds()
+        return
+    end
+    if gpe then return end
+    if input.KeyCode == Enum.KeyCode.RightShift then
+        Main.Visible = not Main.Visible
+        return
+    end
+    if input.UserInputType == Enum.UserInputType.Keyboard then
+        for _, e in pairs(modules) do
+            if e.bind and input.KeyCode == e.bind then e.toggle() end
+        end
+    end
+end)
+
+---------------------------------------------------------------- UNLOAD
 local function unload()
     if not alive then return end
     alive = false
     for _, c in ipairs(conns) do pcall(function() c:Disconnect() end) end
     pcall(function()
-        local h = LP.Character and LP.Character:FindFirstChildOfClass("Humanoid")
-        if h then h.PlatformStand = false end
+        local hum = getHum()
+        if hum and wasSpeedOn then hum.WalkSpeed = origWalkSpeed or 16 end
     end)
-    pcall(function()
-        if LP.Character and wasUntouchable then applyUntouchable(LP.Character, false) end
-        if LP.Character and wasInvisible then applyInvisible(LP.Character, false) end
-        if skyHideActive and skyHideReturn then
-            local r = getRoot()
-            if r then r.CFrame = skyHideReturn end
-        end
-    end)
+    pcall(function() RunService:UnbindFromRenderStep("BadFightMouseUnlock") end)
     pcall(function() Gui:Destroy() end)
-    pcall(function() if getgenv then getgenv().PinghyuHubUnload = nil end end)
+    pcall(function() ESPGui:Destroy() end)
+    pcall(function() HUD:Destroy() end)
+    pcall(function() if getgenv then getgenv().BadFightUnload = nil end end)
 end
- 
-button(pMisc, hasFS and "Save Config" or "Save Config (executor unsupported)", function()
-    local _, msg = saveCfg()
-    setStatus(msg)
-end)
-button(pMisc, "Load Config", function()
-    local ok, msg = loadCfg()
-    if ok then safeStart() refreshAll() end
-    setStatus(msg)
-end)
-button(pMisc, "Reset To Defaults", function()
-    Cfg = deepCopy(DEFAULT)
-    refreshAll()
-    setStatus("reset to defaults")
-end)
-button(pMisc, "Unload Hub", unload, Color3.fromRGB(140, 35, 35))
-statusLbl = new("TextLabel", {Size = UDim2.new(1, 0, 0, 18), BackgroundTransparency = 1, Text = "", TextColor3 = C.dim, Font = Enum.Font.Gotham, TextSize = 11, TextXAlignment = Enum.TextXAlignment.Left}, pMisc)
- 
-CloseBtn.MouseButton1Click:Connect(unload)
-showTab("Farm")
- 
----------------------------------------------------------------- INPUT
-conn(UIS.InputBegan, function(i, gpe)
-    if capture and i.UserInputType == Enum.UserInputType.Keyboard then
-        local fn = capture
-        capture = nil
-        fn(i.KeyCode)
-        return
-    end
-    if gpe then return end
-    local name = i.KeyCode.Name
-    if name == Cfg.Misc.ToggleUI then
-        Main.Visible = not Main.Visible
-    elseif name == Cfg.Misc.ToggleFarm then
-        Cfg.Farm.Enabled = not Cfg.Farm.Enabled
-        State.target = nil
-        refreshAll()
-    end
-end)
- 
-pcall(function() if getgenv then getgenv().PinghyuHubUnload = unload end end)
-print("[pinghyu] Hub loaded | " .. Cfg.Misc.ToggleUI .. " = UI, " .. Cfg.Misc.ToggleFarm .. " = autofarm")
+pcall(function() if getgenv then getgenv().BadFightUnload = unload end end)
+
+print("[BadFight Client] loaded. RightShift = show/hide UI. Click a module name to toggle it; click the dots for settings + keybind.")
+
+end, function(e) return debug.traceback(tostring(e), 2) end)
+
+if not __ok then
+    warn("[BadFight] LOAD ERROR:\n" .. tostring(__err))
+    pcall(function() if writefile then writefile("BadFight_error.txt", tostring(__err)) end end)
+end
