@@ -90,12 +90,31 @@ local gui = 'new'
 if not isfolder('newvape/assets/'..gui) then
 	makefolder('newvape/assets/'..gui)
 end
-vape = loadstring(downloadFile('newvape/guis/'..gui..'.lua'), 'gui')()
+vape = loadstring(downloadFile('newvape/guis/'..gui..'/init.lua'), 'gui')()
 shared.vape = vape
 
-if shared.VapeIndependent then
+if not shared.VapeIndependent then
+	local suc, res = pcall(function()
+		local gamePath = 'newvape/games/'..game.PlaceId..'.lua'
+		if isfile(gamePath) then
+			return readfile(gamePath)
+		end
+		local ok, body = pcall(function()
+			return game:HttpGet('https://raw.githubusercontent.com/gimujun484-tech/Pinghyu/main/games/'..game.PlaceId..'.lua', true)
+		end)
+		if ok and body and body ~= '404: Not Found' then
+			writefile(gamePath, body)
+			return body
+		end
+		return downloadFile('newvape/games/universal.lua')
+	end)
+
+	if suc and res then
+		loadstring(res, tostring(game.PlaceId))()
+	end
+
+	finishLoading()
+else
 	vape.Init = finishLoading
 	return vape
 end
-
-finishLoading()
