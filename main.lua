@@ -90,6 +90,7 @@ local gui = 'new'
 if not isfolder('newvape/assets/'..gui) then
 	makefolder('newvape/assets/'..gui)
 end
+loadstring(downloadFile('newvape/guis/'..gui..'/base.lua'), 'base')()
 vape = loadstring(downloadFile('newvape/guis/'..gui..'/init.lua'), 'gui')()
 shared.vape = vape
 
